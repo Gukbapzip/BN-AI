@@ -1,0 +1,25 @@
+src:
+  - src/**/*
+
+tests:
+  - tests/**/*
+
+JSON:
+  - data/**/*
+
+mods:
+  - data/mods/**/*
+
+translation:
+  - lang/**/*
+
+docs:
+  - docs/**/*
+
+scripts:
+  - scripts/**/*
+
+lua:
+  - "**/*.lua"
+  - src/catalua*.cpp
+  - src/catalua*.h
