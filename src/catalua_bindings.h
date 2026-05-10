@@ -29,6 +29,7 @@ void reg_effect( sol::state &lua );
 void reg_enums( sol::state &lua );
 void reg_game_api( sol::state &lua );
 void reg_game_ids( sol::state &lua );
+void reg_game_ids_ext( sol::state &lua );
 void reg_hooks_examples( sol::state &lua );
 void reg_inventory( sol::state &lua );
 void reg_item( sol::state &lua );

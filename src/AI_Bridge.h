@@ -70,6 +70,9 @@ class ai_bridge
             /// Summarized nearby NPC list / proximity facts.
             std::string proximity_npcs_summary;
 
+            /// Summarized NPC stats/status/inventory (the AI itself).
+            std::string npc_status_summary;
+
             /// Summarized player stats/status/inventory highlights.
             std::string player_status_summary;
 

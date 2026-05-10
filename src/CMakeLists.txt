@@ -12,10 +12,10 @@ file(GLOB CATALUA_BINDINGS_SOURCES ${CMAKE_SOURCE_DIR}/src/catalua_bindings*.cpp
 if (MSVC)
     set(CATALUA_BINDINGS_COMPILE_OPTIONS /Od)
 else ()
-    set(CATALUA_BINDINGS_COMPILE_OPTIONS -O0 -g0)
+    set(CATALUA_BINDINGS_COMPILE_OPTIONS "-O0 -g0")
 endif ()
 foreach (catalua_src IN LISTS CATALUA_BINDINGS_SOURCES)
-    set_source_files_properties(${catalua_src} PROPERTIES COMPILE_OPTIONS "${CATALUA_BINDINGS_COMPILE_OPTIONS}")
+    set_source_files_properties(${catalua_src} PROPERTIES COMPILE_FLAGS "${CATALUA_BINDINGS_COMPILE_OPTIONS}")
 endforeach ()
 
 file(GLOB CATACLYSM_BN_HEADERS ${CMAKE_SOURCE_DIR}/src/*.h)
@@ -46,6 +46,7 @@ function(setup_common_target_properties target_name)
     # Add common libraries
     target_link_libraries(${target_name} PUBLIC ZLIB::ZLIB)
     target_link_libraries(${target_name} PUBLIC SQLite::SQLite3)
+    target_link_libraries(${target_name} PUBLIC curl)
 
     # Setup threading
     if (CMAKE_USE_PTHREADS_INIT)

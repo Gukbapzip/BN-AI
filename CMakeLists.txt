@@ -254,19 +254,19 @@ if (NOT MSVC)
        -Wpedantic \
        -Wsuggest-override \
        -Wunused-macros \
-       -Wno-zero-as-null-pointer-constant \
-       -Wno-unknown-warning-option \
-       -Wno-dangling-reference \
-       -Wno-range-loop-analysis")
+       -Wno-zero-as-null-pointer-constant")
     if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
-       set(CATA_WARNINGS "${CATA_WARNINGS} -Wno-unknown-warning-option")
+       set(CATA_WARNINGS "${CATA_WARNINGS} -Wno-unknown-warning-option -Wno-range-loop-analysis")
     else()
-       set(CATA_WARNINGS "${CATA_WARNINGS} -Wno-unknown-warning")
+       set(CATA_WARNINGS "${CATA_WARNINGS} -Wno-dangling-reference")
     endif()
     if (NOT "${CMAKE_SYSTEM_NAME}" MATCHES "Windows")
         set(CATA_WARNINGS "${CATA_WARNINGS} -Wredundant-decls")
     endif ()
     set(CATA_OTHER_FLAGS "${CATA_OTHER_FLAGS} -fsigned-char -fno-builtin-std-forward_like -fno-finite-math-only")
+    if (WIN32)
+        set(CATA_OTHER_FLAGS "${CATA_OTHER_FLAGS} -fno-keep-inline-dllexport -Wa,-mbig-obj")
+    endif ()
     # Add debug symbols for non-release builds or when backtrace is enabled
     if (BACKTRACE OR NOT RELEASE)
         set(CATA_OTHER_FLAGS "${CATA_OTHER_FLAGS} -g1")

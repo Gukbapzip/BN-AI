@@ -1444,7 +1444,7 @@ tab_direction set_traits( avatar &u, points_left &points )
                            u.prof->gender_appropriate_name( u.male ) );
                 } else {
                     std::string type;
-                    for( const auto t : cur_trait.obj().types ) {
+                    for( const auto &t : cur_trait.obj().types ) {
                         if( required_cosmetic_trait_types.contains( t ) ) {
                             type = t;
                             break;
@@ -1458,7 +1458,7 @@ tab_direction set_traits( avatar &u, points_left &points )
             } else if( newcharacter::has_conflicting_trait( u, cur_trait ) ) {
                 // Allow swapping cosmetic traits
                 std::string type;
-                for( const auto t : cur_trait.obj().types ) {
+                for( const auto &t : cur_trait.obj().types ) {
                     if( cosmetic_trait_types.contains( t ) ) {
                         type = t;
                         break;

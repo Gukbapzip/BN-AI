@@ -144,29 +144,10 @@ auto get_talk_ai_options() -> ai_bridge::options & {
   static ai_bridge::options opts;
   static bool inited = false;
   if (!inited) {
-    // Default fallback values
     opts.endpoint = "http://127.0.0.1:11434/v1/chat/completions";
     opts.model = "mistral-22b";
     opts.max_in_flight = 2;
     opts.ignore_invalid_commands = true;
-
-    // Try to load from config/ai_bridge.json
-    const std::string config_path = "./config/ai_bridge.json";
-    std::ifstream config_file(
-        config_path, std::ifstream::in | std::ifstream::binary);
-    if (config_file.good()) {
-      try {
-        JsonIn jsin(config_file);
-        if (jsin.test_object()) {
-          JsonObject jo = jsin.get_object();
-          jo.read("endpoint", opts.endpoint);
-          jo.read("model", opts.model);
-          jo.read("max_in_flight", opts.max_in_flight);
-        }
-      } catch (const JsonError &e) {
-        // Silently fall back to defaults if parsing fails
-      }
-    }
     // Transport is intentionally left unset here; wire it from an integration
     // unit that provides the actual HTTP client and assigns opts.transport.
     opts.transport = [](const ai_bridge::request &req, std::string &raw_out,
@@ -215,7 +196,6 @@ auto execute_ai_command_allowlist(dialogue &d, const ai_bridge::command &cmd)
       {"give_aid", talk_function::give_aid},             // 플레이어 응급 치료
       {"give_all_aid", talk_function::give_all_aid},     // 전 동료 응급 치료
       {"trade", talk_function::start_trade},             // 거래 UI 열기
-      {"drop_weapon", talk_function::drop_weapon},       // 자신의 무기 내려놓기
 
       // === 작업 배정 ===
       {"sort_loot", talk_function::sort_loot},             // 전리품 정리
@@ -232,39 +212,6 @@ auto execute_ai_command_allowlist(dialogue &d, const ai_bridge::command &cmd)
       {"wake_up", talk_function::wake_up},           // 수면 NPC 기상
       {"morale_chat", talk_function::morale_chat},   // 사기 충전 대화
       {"npc_thankful", talk_function::npc_thankful}, // 감사 표현 (태도 개선)
-
-      // === 전투 / 전술 규칙 ===
-      {"engage_all",
-       [](npc &n) {
-         n.rules.engagement = combat_engagement::ALL;
-         n.invalidate_range_cache();
-       }},
-      {"engage_none",
-       [](npc &n) {
-         n.rules.engagement = combat_engagement::NONE;
-         n.invalidate_range_cache();
-       }},
-      {"engage_close",
-       [](npc &n) {
-         n.rules.engagement = combat_engagement::CLOSE;
-         n.invalidate_range_cache();
-       }},
-      {"aim_precise",
-       [](npc &n) {
-         n.rules.aim = aim_rule::PRECISE;
-         n.invalidate_range_cache();
-       }},
-      {"aim_spray",
-       [](npc &n) {
-         n.rules.aim = aim_rule::SPRAY;
-         n.invalidate_range_cache();
-       }},
-      {"use_guns", [](npc &n) { n.rules.set_flag(ally_rule::use_guns); }},
-      {"stop_guns", [](npc &n) { n.rules.clear_flag(ally_rule::use_guns); }},
-      {"use_grenades",
-       [](npc &n) { n.rules.set_flag(ally_rule::use_grenades); }},
-      {"stop_grenades",
-       [](npc &n) { n.rules.clear_flag(ally_rule::use_grenades); }},
   };
 
   auto *npc_ptr = dynamic_cast<npc *>(d.beta);
@@ -282,19 +229,20 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d) -> void {
   const auto action_example =
       std::string{R"(<action>{"action": "follow"}</action>)"};
   req.system = string_format(
-      "## ROLE: %s. Talking to %s.\n"
-      "## TASK: Natural RP. Append tag at END only if acting.\n"
-      "## RULES:\n"
-      "- No action? Dialogue ONLY. NO tags.\n"
-      "- NEVER invent tags. ONLY use actions below.\n"
-      "- Tag Format: <action>{\"action\": \"NAME\"}</action>\n"
-      "## ALLOWED ACTIONS: follow, guard, stop_guard, trade, give_aid, "
-      "sort_loot, do_construction, do_butcher, revert_activity, morale_chat, "
-      "npc_thankful, engage_all, engage_none, engage_close, aim_precise, "
-      "aim_spray, use_guns, stop_guns, use_grenades, stop_grenades.\n\n"
-      "Example: \"I'll watch your back. Be safe.%s\"",
+      "You are '%s', an NPC in Cataclysm: Bright Nights. Talking to '%s'.\n"
+      "Speak naturally and in character. Do NOT use JSON for dialogue.\n"
+      "ONLY when you decide to take a game action, append this EXACT tag "
+      "format at the END of your reply:\n"
+      "%s\n"
+      "Allowed actions: follow, follow_only, stop_following, guard, "
+      "stop_guard, "
+      "give_equipment, give_aid, give_all_aid, trade, drop_weapon, "
+      "sort_loot, do_construction, do_farming, do_fishing, do_butcher, "
+      "do_mining, do_chop_trees, do_read, revert_activity, "
+      "wake_up, morale_chat, npc_thankful.\n"
+      "Example reply: \"Sure, I'll watch your back.%s\"",
       d.beta->get_name().c_str(), d.alpha->get_name().c_str(),
-      action_example.c_str());
+      action_example.c_str(), action_example.c_str());
 
   auto get_clothing_info = [](const player *p) -> std::string {
     std::string clothes = "";
@@ -2512,13 +2460,6 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
         bridge.pump_callbacks(std::chrono::milliseconds{50});
         if (ai_state.have_reply && !ai_state.reply_displayed) {
           ai_state.reply_displayed = true;
-          // 화면 갱신 전 명령어 즉시 실행
-          if (!ai_state.pending_cmds.empty()) {
-            for (const auto &cmd : ai_state.pending_cmds) {
-              execute_ai_command_allowlist(*this, cmd);
-            }
-            ai_state.pending_cmds.clear();
-          }
           return topic; // opt() 재호출 → 실제 응답 렌더링
         }
         ch = -1;
@@ -2550,12 +2491,8 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
                 string_format(pgettext("you say something", "%s: %s"),
                               colorize(_("You"), c_green), user_text));
 
-            // 플레이어의 대화 누적 및 기록 제한 (타임아웃 방지)
+            // 플레이어의 대화 누적
             ai_state.accumulated_chat += "Player: " + user_text + "\n";
-            if (ai_state.accumulated_chat.size() > 2000) {
-              ai_state.accumulated_chat = ai_state.accumulated_chat.substr(
-                  ai_state.accumulated_chat.size() - 2000);
-            }
 
             ai_state.have_reply = false;
             ai_state.reply_text.clear();
@@ -2581,13 +2518,9 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
                   if (c.result.ok) {
                     st.reply_text = c.result.response.text;
                     st.pending_cmds = c.result.response.commands;
-                    // NPC의 대화 누적 및 기록 제한
+                    // NPC의 대화 누적
                     st.accumulated_chat +=
                         "NPC: " + c.result.response.text + "\n";
-                    if (st.accumulated_chat.size() > 2000) {
-                      st.accumulated_chat = st.accumulated_chat.substr(
-                          st.accumulated_chat.size() - 2000);
-                    }
                   } else {
                     // 파싱/통신 실패 시 에러 원인 출력
                     st.reply_text =

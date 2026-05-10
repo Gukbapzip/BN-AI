@@ -199,18 +199,40 @@
             return out;
         }
 
-        const auto first = raw.find_first_not_of( " \t\r\n" );
-        if( first == std::string::npos || raw[first] != '{' ) {
-            out.ok = true;
+        std::string json_payload;
+        const auto tag_start = raw.find( "<action>" );
+        const auto tag_end = raw.find( "</action>" );
+
+        if( tag_start != std::string::npos && tag_end != std::string::npos && tag_end > tag_start ) {
+            // 태그 밖의 텍스트를 대화문으로 추출
+            out.response.text = raw.substr( 0, tag_start ) + raw.substr( tag_end + 9 );
+            // 태그 안의 내용을 JSON 파싱 대상으로 설정
+            json_payload = raw.substr( tag_start + 8, tag_end - tag_start - 8 );
+        } else {
             out.response.text = raw;
-            return out;
         }
 
-        auto cursor = first;
+        // AI가 지조작한 모든 태그 (<...>) 청소
+        size_t s, e;
+        while( ( s = out.response.text.find( '<' ) ) != std::string::npos &&
+               ( e = out.response.text.find( '>', s ) ) != std::string::npos ) {
+            out.response.text.erase( s, e - s + 1 );
+        }
+
+        // Trim text
+        out.response.text.erase( 0, out.response.text.find_first_not_of( " \t\r\n" ) );
+        out.response.text.erase( out.response.text.find_last_not_of( " \t\r\n" ) + 1 );
+
+        auto cursor = json_payload.find( '{' );
+        if( cursor == std::string::npos ) {
+            out.ok = true; // 태그는 있었으나 JSON이 없는 경우 대화문만 유효
+            return out;
+        }
+        const auto &raw_json = json_payload; // 레거시 파서 호환용 별칭
 
         const auto skip_ws = [&]( ) {
-            while( cursor < raw.size() ) {
-                const auto ch = raw[cursor];
+            while( cursor < raw_json.size() ) {
+                const auto ch = raw_json[cursor];
                 if( ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n' ) {
                     break;
                 }
@@ -220,16 +242,16 @@
 
         const auto parse_string = [&]( std::string &dst ) -> bool {
             skip_ws();
-            if( cursor >= raw.size() || raw[cursor] != '"' ) {
+            if( cursor >= raw_json.size() || raw_json[cursor] != '"' ) {
                 return false;
             }
             cursor++; 
             dst.clear();
-            while( cursor < raw.size() ) {
-                const auto ch = raw[cursor++];
+            while( cursor < raw_json.size() ) {
+                const auto ch = raw_json[cursor++];
                 if( ch == '"' ) return true;
-                if( ch == '\\' && cursor < raw.size() ) {
-                    const auto esc = raw[cursor++];
+                if( ch == '\\' && cursor < raw_json.size() ) {
+                    const auto esc = raw_json[cursor++];
                     switch( esc ) {
                         case '"': case '\\': case '/': dst.push_back( esc ); break;
                         case 'b': dst.push_back( '\b' ); break;
@@ -248,8 +270,8 @@
 
         const auto skip_value = [&]( ) -> bool {
             skip_ws();
-            if( cursor >= raw.size() ) return false;
-            const auto ch = raw[cursor];
+            if( cursor >= raw_json.size() ) return false;
+            const auto ch = raw_json[cursor];
             if( ch == '"' ) {
                 auto tmp = std::string{};
                 return parse_string( tmp );
@@ -257,7 +279,7 @@
             if( ch == '{' ) {
                 auto depth = 0;
                 do {
-                    const auto c = raw[cursor++];
+                    const auto c = raw_json[cursor++];
                     if( c == '"' ) {
                         cursor--;
                         auto tmp = std::string{};
@@ -266,13 +288,13 @@
                     }
                     if( c == '{' ) depth++;
                     else if( c == '}' ) depth--;
-                } while( cursor < raw.size() && depth > 0 );
+                } while( cursor < raw_json.size() && depth > 0 );
                 return depth == 0;
             }
             if( ch == '[' ) {
                 auto depth = 0;
                 do {
-                    const auto c = raw[cursor++];
+                    const auto c = raw_json[cursor++];
                     if( c == '"' ) {
                         cursor--;
                         auto tmp = std::string{};
@@ -281,11 +303,11 @@
                     }
                     if( c == '[' ) depth++;
                     else if( c == ']' ) depth--;
-                } while( cursor < raw.size() && depth > 0 );
+                } while( cursor < raw_json.size() && depth > 0 );
                 return depth == 0;
             }
-            while( cursor < raw.size() ) {
-                const auto c = raw[cursor];
+            while( cursor < raw_json.size() ) {
+                const auto c = raw_json[cursor];
                 if( c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\r' || c == '\n' ) break;
                 cursor++;
             }
@@ -296,7 +318,7 @@
         auto value = std::string{};
 
         skip_ws();
-        if( cursor >= raw.size() || raw[cursor] != '{' ) {
+        if( cursor >= raw_json.size() || raw_json[cursor] != '{' ) {
             out.ok = false;
             out.error.code = error_code::parse_error;
             out.error.message = "expected object";
@@ -306,13 +328,13 @@
 
         while( true ) {
             skip_ws();
-            if( cursor >= raw.size() ) {
+            if( cursor >= raw_json.size() ) {
                 out.ok = false;
                 out.error.code = error_code::parse_error;
                 out.error.message = "unexpected end of input";
                 return out;
             }
-            if( raw[cursor] == '}' ) {
+            if( raw_json[cursor] == '}' ) {
                 cursor++;
                 break;
             }
@@ -323,7 +345,7 @@
                 return out;
             }
             skip_ws();
-            if( cursor >= raw.size() || raw[cursor] != ':' ) {
+            if( cursor >= raw_json.size() || raw_json[cursor] != ':' ) {
                 out.ok = false;
                 out.error.code = error_code::parse_error;
                 out.error.message = "expected ':'";
@@ -349,11 +371,11 @@
             }
 
             skip_ws();
-            if( cursor < raw.size() && raw[cursor] == ',' ) {
+            if( cursor < raw_json.size() && raw_json[cursor] == ',' ) {
                 cursor++;
                 continue;
             }
-            if( cursor < raw.size() && raw[cursor] == '}' ) {
+            if( cursor < raw_json.size() && raw_json[cursor] == '}' ) {
                 cursor++;
                 break;
             }
@@ -444,6 +466,7 @@
         std::string context = "";
         if (!req.ctx.game_state_summary.empty()) context += "GAME_STATE:\\n" + escape_json(req.ctx.game_state_summary) + "\\n";
         if (!req.ctx.proximity_npcs_summary.empty()) context += "PROXIMITY_NPCS:\\n" + escape_json(req.ctx.proximity_npcs_summary) + "\\n";
+        if (!req.ctx.npc_status_summary.empty()) context += "MY_STATUS:\\n" + escape_json(req.ctx.npc_status_summary) + "\\n";
         if (!req.ctx.player_status_summary.empty()) context += "PLAYER_STATUS:\\n" + escape_json(req.ctx.player_status_summary) + "\\n";
         if (!req.ctx.conversation_summary.empty()) context += "CONVERSATION:\\n" + escape_json(req.ctx.conversation_summary) + "\\n";
 
@@ -505,14 +528,29 @@
                     for (size_t i = start_quote; i < raw_out.size(); ++i) {
                         if (raw_out[i] == '\\' && i + 1 < raw_out.size()) {
                             char esc = raw_out[i+1];
-                            if (esc == '"' || esc == '\\' || esc == '/') extracted += esc;
-                            else if (esc == 'n') extracted += '\n';
-                            else if (esc == 'r') extracted += '\r';
-                            else if (esc == 't') extracted += '\t';
-                            else if (esc == 'b') extracted += '\b';
-                            else if (esc == 'f') extracted += '\f';
-                            else extracted += esc;
-                            i++;
+                            if (esc == '"' || esc == '\\' || esc == '/') { extracted += esc; i++; }
+                            else if (esc == 'n') { extracted += '\n'; i++; }
+                            else if (esc == 'r') { extracted += '\r'; i++; }
+                            else if (esc == 't') { extracted += '\t'; i++; }
+                            else if (esc == 'b') { extracted += '\b'; i++; }
+                            else if (esc == 'f') { extracted += '\f'; i++; }
+                            else if (esc == 'u' && i + 5 < raw_out.size()) {
+                                // \uXXXX 유니코드 이스케이프 디코딩
+                                const auto hex = raw_out.substr(i + 2, 4);
+                                auto cp = unsigned{};
+                                try { cp = static_cast<unsigned>(std::stoul(hex, nullptr, 16)); } catch(...) { cp = '?'; }
+                                if (cp < 0x80) {
+                                    extracted += static_cast<char>(cp);
+                                } else if (cp < 0x800) {
+                                    extracted += static_cast<char>(0xC0 | (cp >> 6));
+                                    extracted += static_cast<char>(0x80 | (cp & 0x3F));
+                                } else {
+                                    extracted += static_cast<char>(0xE0 | (cp >> 12));
+                                    extracted += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                                    extracted += static_cast<char>(0x80 | (cp & 0x3F));
+                                }
+                                i += 5; // \uXXXX = 6자 소비
+                            } else { extracted += esc; i++; }
                         } else if (raw_out[i] == '"') {
                             break;
                         } else {

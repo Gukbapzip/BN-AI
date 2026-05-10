@@ -17,7 +17,8 @@ build
 test_user_dir*
 /build-start-time
 /cmake-build-debug/
-/config/
+/config/*
+!/config/ai_bridge.json
 /data/*.template
 /data/mods/user-default-mods.json
 /dep/
@@ -235,3 +236,11 @@ clang-tidy-trace
 
 CMakeFiles/
 CMakeCache.txt
+
+# errors
+data/font/*.ttf
+data/font/*.otf
+
+# AI Bridge Config
+/config/*
+!/config/ai_bridge.json
