@@ -3,11 +3,11 @@
 <img width="741" height="707" alt="3" src="https://github.com/user-attachments/assets/2bc810f4-035e-4f03-8380-d5781a52e8da" />
 <img width="713" height="685" alt="화면 캡처 2026-05-10 100845" src="https://github.com/user-attachments/assets/e59094de-99cc-4cb1-b534-1e7d36e0a1fa" />
 
+<img width="1201" height="689" alt="화면 캡처 2026-05-10 213009" src="https://github.com/user-attachments/assets/809c67a6-9635-4986-8288-573cb69ca6ab" />
+<img width="262" height="393" alt="화면 캡처 2026-05-10 213028" src="https://github.com/user-attachments/assets/61448add-96fe-4e18-b155-df2cd90c5e6b" />
 
 TODO list based on estimated difficulty
 
-<img width="262" height="393" alt="화면 캡처 2026-05-10 213028" src="https://github.com/user-attachments/assets/61448add-96fe-4e18-b155-df2cd90c5e6b" />
-<img width="1201" height="689" alt="화면 캡처 2026-05-10 213009" src="https://github.com/user-attachments/assets/809c67a6-9635-4986-8288-573cb69ca6ab" />
 
 0. Connect local AI on BN Engine --- 100%
 1. Refine JSON for BN MoE agent (Minimize Hallucination) --- 50%
