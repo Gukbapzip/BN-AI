@@ -14,3 +14,6 @@ TODO list based on estimated difficulty
 4. Implement auto-crafting, auto-gathering by efficiant expedient --- 0%
 5. Auto-supply based on JSON / inventory / equipment --- 0%
 6. Integrate (0:3) for set priority themselves ---0%
+
+
+Modify ai_bridge.json to connect to the local AI you are using.
