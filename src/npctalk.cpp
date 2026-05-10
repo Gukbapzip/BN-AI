@@ -20,6 +20,7 @@
 #include "activity_type.h"
 #include "auto_pickup.h"
 #include "avatar.h"
+#include "bionics.h"
 #include "bodypart.h"
 #include "calendar.h"
 #include "cata_utility.h"
@@ -32,6 +33,7 @@
 #include "clzones.h"
 #include "color.h"
 #include "condition.h"
+#include "construction.h"
 #include "debug.h"
 #include "enums.h"
 #include "faction.h"
@@ -44,19 +46,27 @@
 #include "item.h"
 #include "item_category.h"
 #include "item_contents.h"
+#include "item_factory.h"
+#include "monstergenerator.h"
+#include "recipe.h"
+#include "ai_actions.h"
 #include "itype.h"
 #include "json.h"
 #include "line.h"
 #include "magic.h"
 #include "make_static.h"
 #include "map.h"
+#include "map_item_stack.h"
+#include "map_iterator.h"
 #include "mapgen_functions.h"
 #include "martialarts.h"
 #include "message_types.h"
 #include "messages.h"
 #include "mission.h"
 #include "monster.h"
+#include "monstergenerator.h"
 #include "mtype.h"
+#include "mutation.h"
 #include "npc.h"
 #include "npc_class.h"
 #include "npctalk.h"
@@ -69,6 +79,7 @@
 #include "player_activity.h"
 #include "point.h"
 #include "recipe.h"
+#include "recipe_dictionary.h"
 #include "ret_val.h"
 #include "rng.h"
 #include "skill.h"
@@ -90,6 +101,7 @@
 #include "vpart_position.h"
 #include "vpart_range.h"
 #include "weather.h"
+#include <fstream>
 
 static const activity_id ACT_AIM("ACT_AIM");
 static const activity_id ACT_SOCIALIZE("ACT_SOCIALIZE");
@@ -138,6 +150,8 @@ struct talk_ai_state {
   std::vector<ai_bridge::command> pending_cmds;
   std::string last_history_line;
   std::string accumulated_chat;
+  bool is_last_input_order = false;
+  std::string last_executed_action;
 };
 
 auto get_talk_ai_options() -> ai_bridge::options & {
@@ -152,8 +166,8 @@ auto get_talk_ai_options() -> ai_bridge::options & {
 
     // Try to load from config/ai_bridge.json
     const std::string config_path = "./config/ai_bridge.json";
-    std::ifstream config_file(
-        config_path, std::ifstream::in | std::ifstream::binary);
+    std::ifstream config_file(config_path,
+                              std::ifstream::in | std::ifstream::binary);
     if (config_file.good()) {
       try {
         JsonIn jsin(config_file);
@@ -278,67 +292,57 @@ auto execute_ai_command_allowlist(dialogue &d, const ai_bridge::command &cmd)
   }
 }
 
-auto populate_ai_context(ai_bridge::request &req, const dialogue &d) -> void {
+auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
+                         bool is_order) -> void {
   const auto action_example =
       std::string{R"(<action>{"action": "follow"}</action>)"};
-  req.system = string_format(
-      "## ROLE: %s. Talking to %s.\n"
-      "## TASK: Natural RP. Append tag at END only if acting.\n"
-      "## RULES:\n"
-      "- No action? Dialogue ONLY. NO tags.\n"
-      "- NEVER invent tags. ONLY use actions below.\n"
-      "- Tag Format: <action>{\"action\": \"NAME\"}</action>\n"
-      "## ALLOWED ACTIONS: follow, guard, stop_guard, trade, give_aid, "
-      "sort_loot, do_construction, do_butcher, revert_activity, morale_chat, "
-      "npc_thankful, engage_all, engage_none, engage_close, aim_precise, "
-      "aim_spray, use_guns, stop_guns, use_grenades, stop_grenades.\n\n"
-      "Example: \"I'll watch your back. Be safe.%s\"",
-      d.beta->get_name().c_str(), d.alpha->get_name().c_str(),
-      action_example.c_str());
+  std::string system =
+      string_format("## ROLE: %s. Talking to %s.\n"
+                    "## TASK: Natural RP based on the JSON data provided.\n",
+                    d.beta->get_name().c_str(), d.alpha->get_name().c_str());
 
-  auto get_clothing_info = [](const player *p) -> std::string {
-    std::string clothes = "";
-    for (const item *it : p->worn) {
-      if (it)
-        clothes += it->tname() + ", ";
-    }
-    if (!clothes.empty()) {
-      clothes.pop_back();
-      clothes.pop_back();
-    } else {
-      clothes = "Naked";
-    }
-    auto bp_info = [&](const std::string &name, const std::string &id) {
-      bodypart_id bid(id);
-      bodypart_str_id bsid(id);
-      return string_format("%s[Bash:%d,Cut:%d,Bul:%d,Encumb:%d]", name.c_str(),
-                           p->get_armor_bash(bid), p->get_armor_cut(bid),
-                           p->get_armor_bullet(bid), p->encumb(bsid));
-    };
-    return string_format(
-        "Worn: %s\nDefense&Encumb: %s, %s, %s, %s, %s, %s", clothes.c_str(),
-        bp_info("Head", "head").c_str(), bp_info("Torso", "torso").c_str(),
-        bp_info("L.Arm", "arm_l").c_str(), bp_info("R.Arm", "arm_r").c_str(),
-        bp_info("L.Leg", "leg_l").c_str(), bp_info("R.Leg", "leg_r").c_str());
-  };
+  if (is_order) {
+    system +=
+        "## COMMAND FORMAT (CRITICAL):\n"
+        "- If you agree to an order, you MUST append the action tag at the very end.\n"
+        "- Format: <action>{\"action\": \"action_name\", \"target\": \"target_id\"}</action>\n"
+        "- Example: \"Sure, I'll pick up those items. <action>{\"action\": \"pick_up\", \"target\": \"machete\"}</action><action>{\"action\": \"pick_up\", \"target\": \"m107a1\"}</action>\"\n"
+        "## ALLOWED ACTIONS: follow, guard, stop_guard, pick_up, trade, give_aid, "
+        "sort_loot, do_construction, do_butcher, revert_activity, morale_chat, "
+        "npc_thankful, engage_all, engage_none, engage_close, aim_precise, "
+        "aim_spray, use_guns, stop_guns, use_grenades, stop_grenades.\n";
+  }
+
+  system += "## RULES:\n"
+            "- CRITICAL: Use skill levels from context. NEVER invent levels.\n"
+            "- ALWAYS check [MY_DETAILED_STATUS_JSON].\n"
+            "- ABSOLUTE TRUTH: The JSON data in [CURRENT_GAME_CONTEXT] is the "
+            "ONLY factual source. Trust it 100% over memory.\n"
+            "- When an order is given, prioritize executing it over long chat.\n";
+
+  req.system = system;
 
   req.ctx.game_state_summary = string_format(
-      "Time: %s\nWeather: %s\nLocation: %s (Terrain: %s)",
+      "{\"time\": \"%s\", \"weather\": \"%s\", \"location\": \"%s\", "
+      "\"terrain\": \"%s\"}",
       to_string_time_of_day(calendar::turn).c_str(),
       get_weather().weather_id->name.translated().c_str(),
       overmap_buffer.ter(d.beta->global_omt_location())->get_name().c_str(),
       get_map().tername(d.beta->pos()).c_str());
 
-  auto get_weapon_info = [](const item &weap,
+  auto get_weapon_json = [](const item &weap,
                             const player *p = nullptr) -> std::string {
     if (weap.is_null())
-      return "Unarmed";
+      return "{\"name\": \"unarmed\"}";
     if (weap.is_gun()) {
-      return string_format("%s (Ranged, Ammo: %ld/%ld, Max Range: %d tiles)",
-                           weap.tname().c_str(), weap.ammo_remaining(),
-                           weap.ammo_capacity(), weap.gun_range(p));
+      return string_format(
+          "{\"name\": \"%s\", \"type\": \"ranged\", \"ammo\": %d, "
+          "\"capacity\": %d, \"range\": %d}",
+          weap.tname().c_str(), static_cast<int>(weap.ammo_remaining()),
+          static_cast<int>(weap.ammo_capacity()), weap.gun_range(p));
     } else {
-      return string_format("%s (Melee, Bash: %d, Pierce: %d, Cut: %d)",
+      return string_format("{\"name\": \"%s\", \"type\": \"melee\", \"bash\": "
+                           "%d, \"stab\": %d, \"cut\": %d}",
                            weap.tname().c_str(),
                            weap.damage_melee(damage_type::DT_BASH),
                            weap.damage_melee(damage_type::DT_STAB),
@@ -346,54 +350,301 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d) -> void {
     }
   };
 
-  auto get_hp_info = [](const player *p) -> std::string {
-    return string_format("Head: %d/%d, Torso: %d/%d, L.Arm: %d/%d, R.Arm: "
-                         "%d/%d, L.Leg: %d/%d, R.Leg: %d/%d",
-                         p->get_part_hp_cur(bodypart_id("head")),
-                         p->get_part_hp_max(bodypart_id("head")),
-                         p->get_part_hp_cur(bodypart_id("torso")),
-                         p->get_part_hp_max(bodypart_id("torso")),
-                         p->get_part_hp_cur(bodypart_id("arm_l")),
-                         p->get_part_hp_max(bodypart_id("arm_l")),
-                         p->get_part_hp_cur(bodypart_id("arm_r")),
-                         p->get_part_hp_max(bodypart_id("arm_r")),
-                         p->get_part_hp_cur(bodypart_id("leg_l")),
-                         p->get_part_hp_max(bodypart_id("leg_l")),
-                         p->get_part_hp_cur(bodypart_id("leg_r")),
-                         p->get_part_hp_max(bodypart_id("leg_r")));
+  auto get_hp_json = [](const player *p) -> std::string {
+    auto part_hp = [&](const std::string &id) {
+      return string_format("{\"cur\": %d, \"max\": %d}",
+                           p->get_part_hp_cur(bodypart_id(id)),
+                           p->get_part_hp_max(bodypart_id(id)));
+    };
+    return string_format("{\"head\": %s, \"torso\": %s, \"arm_l\": %s, "
+                         "\"arm_r\": %s, \"leg_l\": %s, \"leg_r\": %s}",
+                         part_hp("head").c_str(), part_hp("torso").c_str(),
+                         part_hp("arm_l").c_str(), part_hp("arm_r").c_str(),
+                         part_hp("leg_l").c_str(), part_hp("leg_r").c_str());
   };
 
-  req.ctx.npc_status_summary = string_format(
-      "My Health (Head/Torso=0 is Death): %s\nMy Pain: %s\nMy Weapon: %s\n%s",
-      get_hp_info(d.beta).c_str(), d.beta->get_pain_description().first.c_str(),
-      get_weapon_info(d.beta->used_weapon(), d.beta).c_str(),
-      get_clothing_info(d.beta).c_str());
+  auto get_skills_json = [](const player *p) -> std::string {
+    std::string s_json = "{";
+    for (const auto &sk : Skill::skills) {
+      int level = p->get_skill_level(sk.ident());
+      if (level > 0) {
+        s_json += string_format("\"%s\": %d, ", sk.ident().c_str(), level);
+      }
+    }
+    if (s_json.size() > 1) {
+      s_json.pop_back();
+      s_json.pop_back();
+    }
+    s_json += "}";
+    return s_json;
+  };
 
-  req.ctx.player_status_summary = string_format(
-      "Player Health: %s\nPlayer Weapon: %s\n%s", get_hp_info(d.alpha).c_str(),
-      get_weapon_info(d.alpha->used_weapon(), d.alpha).c_str(),
-      get_clothing_info(d.alpha).c_str());
+  auto get_nearby_items_json = [](const tripoint &pos) -> std::string {
+    std::string items_json = "[";
+    bool first_item = true;
+    for (const auto &p : get_map().points_in_radius(pos, 10)) {
+      if (get_map().sees(pos, p, 10)) {
+        auto stack = get_map().i_at(p);
+        for (const auto &it : stack) {
+          if (!first_item) items_json += ", ";
+          items_json += string_format("{\"name\": \"%s\", \"id\": \"%s\", \"dist\": %d}", 
+                                      it->tname().c_str(), it->typeId().str().c_str(),
+                                      rl_dist(pos, p));
+          first_item = false;
+        }
+      }
+    }
+    items_json += "]";
+    return items_json;
+  };
 
-  std::string prox;
-  for (const monster &m : g->all_monsters()) {
-    if (d.beta->sees(m)) {
-      prox += string_format("- Monster: %s (Distance: %d)\n", m.name().c_str(),
-                            rl_dist(d.beta->pos(), m.pos()));
+  auto get_inv_json = [](const player *p) -> std::string {
+    std::string i_json = "[";
+    const auto &items = const_cast<player *>(p)->inv_dump();
+    // Increase limit to 100 to ensure nothing is missed
+    for (size_t i = 0; i < std::min<size_t>(items.size(), 100); ++i) {
+      i_json += string_format("{\"id\": \"%s\", \"name\": \"%s\"}, ", 
+                              items[i]->typeId().str().c_str(),
+                              items[i]->tname().c_str());
+    }
+    if (i_json.size() > 1) {
+      i_json.pop_back();
+      i_json.pop_back();
+    }
+    i_json += "]";
+    return i_json;
+  };
+
+  auto get_clothing_json = [](const player *p) -> std::string {
+    std::string worn_list = "[";
+    for (const auto &it : p->worn) {
+      if (it) {
+        worn_list += string_format("\"%s\", ", it->tname().c_str());
+      }
+    }
+    if (worn_list.size() > 1) {
+      worn_list.pop_back();
+      worn_list.pop_back();
+    }
+    worn_list += "]";
+
+    auto bp_json = [&](const std::string &id) {
+      bodypart_id bid(id);
+      bodypart_str_id bsid(id);
+      return string_format(
+          "{\"bash\": %d, \"cut\": %d, \"bullet\": %d, \"encumb\": %d}",
+          p->get_armor_bash(bid), p->get_armor_cut(bid),
+          p->get_armor_bullet(bid), p->encumb(bsid));
+    };
+
+    return string_format(
+        "{\"worn\": %s, \"parts\": {\"head\": %s, \"torso\": %s, \"arm_l\": "
+        "%s, \"arm_r\": %s, \"leg_l\": %s, \"leg_r\": %s}}",
+        worn_list.c_str(), bp_json("head").c_str(), bp_json("torso").c_str(),
+        bp_json("arm_l").c_str(), bp_json("arm_r").c_str(),
+        bp_json("leg_l").c_str(), bp_json("leg_r").c_str());
+  };
+
+  auto get_item_knowledge_json = [](const itype_id &id) -> std::string {
+    const auto &uncraft = recipe_dictionary::get_uncraft(id);
+
+    std::string k_json = "{";
+    bool has_recipe = false;
+    for (const auto &pair : recipe_dict) {
+      if (pair.second.result() == id) {
+        if (!has_recipe) {
+          k_json += "\"craftable_from\": [";
+          const auto &comp_list =
+              pair.second.simple_requirements().get_components();
+          for (const auto &comps : comp_list) {
+            if (!comps.empty()) {
+              k_json += "\"" + comps[0].type.str() + "\", ";
+            }
+          }
+          if (k_json.back() == ' ') {
+            k_json.pop_back();
+            k_json.pop_back();
+          }
+          k_json += "], ";
+          has_recipe = true;
+        }
+      }
+    }
+
+    if (!uncraft.result().is_null()) {
+      k_json += "\"disassembles_into\": [";
+      for (const auto &comps : uncraft.simple_requirements().get_components()) {
+        if (!comps.empty()) {
+          k_json += "\"" + comps[0].type.str() + "\", ";
+        }
+      }
+      if (k_json.back() == ' ') {
+        k_json.pop_back();
+        k_json.pop_back();
+      }
+      k_json += "]";
+    }
+
+    if (k_json.back() == ' ' || k_json.back() == ',') {
+      k_json.pop_back();
+      if (k_json.back() == ',')
+        k_json.pop_back();
+    }
+    k_json += "}";
+    return k_json == "{}" ? "null" : k_json;
+  };
+
+  std::ostringstream oss_npc;
+  oss_npc << "{\"skills\": " << get_skills_json(d.beta)
+          << ", \"health\": " << get_hp_json(d.beta)
+          << ", \"stamina\": " << d.beta->get_stamina()
+          << ", \"calories\": " << d.beta->get_stored_kcal()
+          << ", \"thirst\": " << d.beta->get_thirst()
+          << ", \"fatigue\": " << d.beta->get_fatigue() << ", \"pain\": \""
+          << d.beta->get_pain_description().first << "\""
+          << ", \"weapon\": " << get_weapon_json(d.beta->used_weapon(), d.beta)
+          << ", \"inventory\": " << get_inv_json(d.beta)
+          << ", \"armor\": " << get_clothing_json(d.beta)
+          << ", \"nearby_items\": " << get_nearby_items_json(d.beta->pos())
+          << ", \"last_action\": {\"command\": \"" << get_talk_ai_state(&d).last_executed_action 
+          << "\", \"status\": \"verified_success\"}"
+          << ", \"item_knowledge\": {";
+
+  // 모든 인벤토리 아이템에 대한 지식 추가
+  std::set<itype_id> known_ids;
+  if (!d.beta->used_weapon().is_null()) {
+    known_ids.insert(d.beta->used_weapon().typeId());
+  }
+  for (const auto &it : d.beta->inv_dump()) {
+    known_ids.insert(it->typeId());
+  }
+
+  bool first_k = true;
+  for (const auto &id : known_ids) {
+    if (!first_k)
+      oss_npc << ", ";
+    oss_npc << "\"" << id.str() << "\": " << get_item_knowledge_json(id);
+    first_k = false;
+  }
+
+  oss_npc << "}}";
+  req.ctx.npc_status_summary = oss_npc.str();
+
+  std::ostringstream oss_player;
+  oss_player << "{\"health\": " << get_hp_json(d.alpha) << ", \"weapon\": "
+             << get_weapon_json(d.alpha->used_weapon(), d.alpha)
+             << ", \"armor\": " << get_clothing_json(d.alpha) << "}";
+  req.ctx.player_status_summary = oss_player.str();
+
+  std::ostringstream oss_prox;
+  oss_prox << "{\"monsters\": [";
+  bool first_m = true;
+  for (Creature *critter :
+       get_map().get_creatures_in_radius(d.beta->pos(), 60)) {
+    monster *m = dynamic_cast<monster *>(critter);
+    if (m != nullptr && d.beta->sees(*m)) {
+      if (!first_m) {
+        oss_prox << ", ";
+      }
+      oss_prox << "{\"name\": \"" << m->name()
+               << "\", \"dist\": " << rl_dist(d.beta->pos(), m->pos())
+               << ", \"danger\": " << m->type->difficulty << ", \"drops\": \""
+               << m->type->death_drops.str() << "\""
+               << ", \"hostile\": " << (m->friendly == 0 ? "true" : "false")
+               << "}";
+      first_m = false;
     }
   }
+  oss_prox << "], \"npcs\": [";
+  bool first_n = true;
   for (const npc &n : g->all_npcs()) {
     if (n.getID() != d.beta->getID() && d.beta->sees(n.pos())) {
-      prox += string_format("- NPC: %s (Distance: %d)\n", n.name.c_str(),
-                            rl_dist(d.beta->pos(), n.pos()));
+      if (!first_n) {
+        oss_prox << ", ";
+      }
+      oss_prox << "{\"name\": \"" << n.name
+               << "\", \"dist\": " << rl_dist(d.beta->pos(), n.pos()) << "}";
+      first_n = false;
     }
   }
-  if (d.beta->sees(get_avatar().pos())) {
-    prox += string_format("- Player: %s (Distance: %d)\n",
-                          get_avatar().name.c_str(),
-                          rl_dist(d.beta->pos(), get_avatar().pos()));
-  }
-  req.ctx.proximity_npcs_summary = prox.empty() ? "None visible." : prox;
+  oss_prox << "]}";
+  req.ctx.proximity_npcs_summary = oss_prox.str();
   req.ctx.conversation_summary = ""; // Managed dynamically
+}
+
+[[maybe_unused]] auto export_cleaned_game_json() -> void {
+  std::ofstream out("cataclysm_bn_full_knowledge.jsonl");
+  if (!out.is_open())
+    return;
+
+  auto escape_json = [](const std::string &s) {
+    std::string res;
+    for (char c : s) {
+      if (c == '"')
+        res += "\\\"";
+      else if (c == '\\')
+        res += "\\\\";
+      else if (c == '\n')
+        res += "\\n";
+      else if (c == '\r')
+        res += "\\r";
+      else if (c == '\t')
+        res += "\\t";
+      else
+        res += c;
+    }
+    return res;
+  };
+
+  // 1. 모든 아이템 데이터
+  for (const itype *type : item_controller->all()) {
+    if (!type)
+      continue;
+    out << "{\"cat\": \"item\", \"id\": \"" << type->get_id().str()
+        << "\", \"name\": \"" << escape_json(type->nname(1))
+        << "\", \"desc\": \"" << escape_json(type->description.translated())
+        << "\"}\n";
+  }
+
+  // 2. 모든 몬스터 데이터
+  for (const mtype &m : MonsterGenerator::generator().get_all_mtypes()) {
+    out << "{\"cat\": \"monster\", \"id\": \"" << m.id.str()
+        << "\", \"name\": \"" << escape_json(m.nname(1))
+        << "\", \"hp\": " << m.hp << ", \"speed\": " << m.speed
+        << ", \"desc\": \"" << escape_json(m.get_description()) << "\"}\n";
+  }
+
+  // 3. 모든 제작 레시피
+  for (const auto &pair : recipe_dict) {
+    const auto &r = pair.second;
+    std::string result = r.result().str();
+    std::string comps;
+    for (const auto &c : r.simple_requirements().get_components()) {
+      if (!c.empty())
+        comps += c[0].type.str() + ", ";
+    }
+    out << "{\"cat\": \"recipe\", \"result\": \"" << result
+        << "\", \"tools\": \""
+        << escape_json(r.simple_requirements().list_all())
+        << "\", \"comps\": \"" << escape_json(comps) << "\"}\n";
+  }
+
+  // 4. 모든 변이 (Mutations)
+  for (const auto &mut : mutation_branch::get_all()) {
+    out << "{\"cat\": \"mutation\", \"id\": \"" << mut.id.str()
+        << "\", \"name\": \"" << escape_json(mut.name()) << "\", \"desc\": \""
+        << escape_json(mut.desc()) << "\"}\n";
+  }
+
+  // 5. 모든 바이오닉 (Bionics)
+  for (const auto &b : bionic_data::get_all()) {
+    out << "{\"cat\": \"bionic\", \"id\": \"" << b.id.str()
+        << "\", \"name\": \"" << escape_json(b.name.translated())
+        << "\", \"desc\": \"" << escape_json(b.description.translated())
+        << "\"}\n";
+  }
+
+  out.close();
 }
 
 } // namespace
@@ -2408,7 +2659,7 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
   if (use_ai && ai_state.inflight_id == 0 && !ai_state.have_reply) {
     ai_state.reply_displayed = false;
     auto req = ai_bridge::request{};
-    populate_ai_context(req, *this);
+    populate_ai_context(req, *this, false);
 
     req.user = "Generate the NPC's next reply for topic: " + topic.id;
 
@@ -2420,7 +2671,7 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
           st.reply_displayed = false;
           if (c.result.ok) {
             st.reply_text = c.result.response.text;
-            st.pending_cmds = c.result.response.commands;
+            st.pending_cmds = c.result.response.commands; // Store commands!
           } else {
             st.reply_text = "&[System] : " + c.result.error.message;
           }
@@ -2428,9 +2679,35 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
   }
   std::string challenge;
   if (use_ai) {
-    challenge = (ai_state.have_reply && !ai_state.reply_text.empty())
-                    ? ai_state.reply_text
-                    : "&NPC is thinking…";
+    if (ai_state.have_reply) {
+      if (!ai_state.reply_text.empty()) {
+        challenge = ai_state.reply_text;
+      } else if (!ai_state.last_executed_action.empty()) {
+        // 최근에 실행된 명령에 따른 상태 기반 답변
+        std::string cmd = ai_state.last_executed_action;
+        npc *n = dynamic_cast<npc *>(beta);
+        if (cmd == "follow") {
+          if (n->get_attitude() == NPCATT_FOLLOW)
+            challenge = _("I'm already following you.");
+          else
+            challenge = _("Sure, I'll follow you.");
+        } else if (cmd == "guard") {
+          if (n->get_attitude() == NPCATT_NULL)
+            challenge = _("I'm already guarding this spot.");
+          else
+            challenge = _("Understood. I'll stay here and guard.");
+        } else if (cmd == "stop_guard") {
+          challenge = _("Okay, I'll stop guarding and follow you.");
+        } else {
+          challenge = string_format(_("Sure, I'll %s."), cmd.c_str());
+        }
+        ai_state.last_executed_action.clear(); // 대화 출력 후 초기화
+      } else {
+        challenge = _("I'm not sure what you mean...");
+      }
+    } else {
+      challenge = "&NPC is thinking…";
+    }
   } else {
     challenge = dynamic_line(topic);
   }
@@ -2489,6 +2766,7 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
   ctxt.register_manual_key('S', "Size up stats");
   ctxt.register_manual_key('Y', "Yell");
   ctxt.register_manual_key('O', "Check opinion");
+  ctxt.register_manual_key('c', "Order NPC");
 #endif
 
   ui_adaptor ui;
@@ -2512,14 +2790,26 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
         bridge.pump_callbacks(std::chrono::milliseconds{50});
         if (ai_state.have_reply && !ai_state.reply_displayed) {
           ai_state.reply_displayed = true;
-          // 화면 갱신 전 명령어 즉시 실행
           if (!ai_state.pending_cmds.empty()) {
+            npc *n = dynamic_cast<npc *>(beta);
             for (const auto &cmd : ai_state.pending_cmds) {
+              ai_state.last_executed_action = cmd.action;
+              
+              // 1. Engine-side modular actions
+              if (n != nullptr) {
+                std::string result = ai_actions::execute_command(*n, cmd.action, cmd.target);
+                if (!result.empty()) {
+                    add_msg(m_info, "AI Action [%s]: %s", cmd.action.c_str(), result.c_str());
+                }
+              }
+              
+              // 2. Legacy/Toggle allowlist actions
               execute_ai_command_allowlist(*this, cmd);
             }
             ai_state.pending_cmds.clear();
+            return talk_topic("TALK_DONE"); // Close chat on command
           }
-          return topic; // opt() 재호출 → 실제 응답 렌더링
+          return topic; // Re-call opt() to render actual response
         }
         ch = -1;
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
@@ -2528,19 +2818,14 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
 
       bridge.pump_callbacks(std::chrono::milliseconds{2});
 
-      if (ai_state.have_reply && !ai_state.pending_cmds.empty()) {
-        for (const auto &cmd : ai_state.pending_cmds) {
-          execute_ai_command_allowlist(*this, cmd);
-        }
-        ai_state.pending_cmds.clear();
-      }
-
       ch = inp_mngr.get_input_event().get_first_input();
       if (use_ai) {
-        if (ch == KEY_ENTER || ch == '\n' || ch == '\r') {
+        if (ch == KEY_ENTER || ch == '\n' || ch == '\r' || ch == 'c') {
+          bool is_order = (ch == 'c');
           string_input_popup popup;
-          popup.title(_("Say"))
-              .description(_("Type what you want to say."))
+          popup.title(is_order ? _("Order NPC") : _("Say"))
+              .description(is_order ? _("Give a direct command to the NPC.")
+                                    : _("Type what you want to say."))
               .width(64)
               .query();
 
@@ -2550,8 +2835,10 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
                 string_format(pgettext("you say something", "%s: %s"),
                               colorize(_("You"), c_green), user_text));
 
-            // 플레이어의 대화 누적 및 기록 제한 (타임아웃 방지)
-            ai_state.accumulated_chat += "Player: " + user_text + "\n";
+            // 일반 대화인 경우에만 플레이어의 대화 누적 (명령은 기억하지 않음)
+            if (!is_order) {
+              ai_state.accumulated_chat += "Player: " + user_text + "\n";
+            }
             if (ai_state.accumulated_chat.size() > 2000) {
               ai_state.accumulated_chat = ai_state.accumulated_chat.substr(
                   ai_state.accumulated_chat.size() - 2000);
@@ -2561,15 +2848,24 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
             ai_state.reply_text.clear();
             ai_state.pending_cmds.clear();
             ai_state.last_history_line.clear();
+            ai_state.is_last_input_order = is_order;
 
             auto req = ai_bridge::request{};
-            req.timeout =
-                std::chrono::seconds(30); // 타임아웃 설정 (무한 멈춤 방지)
-            populate_ai_context(req, *this);
+            req.timeout = std::chrono::seconds(60); // 타임아웃을 60초로 상향
+            populate_ai_context(req, *this, is_order);
 
-            // 누적된 전체 대화 기록을 전송
-            req.user = "Conversation history:\n" + ai_state.accumulated_chat +
-                       "\nGenerate NPC's next reply.";
+            if (is_order) {
+              req.user = "### [DIRECT_COMMAND]\nPlayer: " + user_text +
+                         "\n\nContext: Conversation history follows:\n" +
+                         ai_state.accumulated_chat +
+                         "\nExecute the command using <action> tag.";
+            } else {
+              req.user =
+                  "### [CASUAL_CHAT]\nPlayer: " + user_text +
+                  "\n\nContext: Conversation history follows:\n" +
+                  ai_state.accumulated_chat +
+                  "\nGenerate NPC's next reply. DO NOT use <action> tags.";
+            }
 
             ai_state.inflight_id = bridge.enqueue(
                 std::move(req), [dlg = this](const ai_bridge::completion &c) {
@@ -2580,13 +2876,18 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
 
                   if (c.result.ok) {
                     st.reply_text = c.result.response.text;
-                    st.pending_cmds = c.result.response.commands;
-                    // NPC의 대화 누적 및 기록 제한
-                    st.accumulated_chat +=
-                        "NPC: " + c.result.response.text + "\n";
-                    if (st.accumulated_chat.size() > 2000) {
-                      st.accumulated_chat = st.accumulated_chat.substr(
-                          st.accumulated_chat.size() - 2000);
+                    if (st.is_last_input_order) {
+                      st.pending_cmds = c.result.response.commands;
+                      // 명령에 대한 응답은 대화 기록에 남기지 않아 메모리를 절약합니다.
+                    } else {
+                      st.pending_cmds.clear();
+                      // 일반 대화인 경우에만 NPC의 대화 누적 및 기록 제한
+                      st.accumulated_chat +=
+                          "NPC: " + c.result.response.text + "\n";
+                      if (st.accumulated_chat.size() > 2000) {
+                        st.accumulated_chat = st.accumulated_chat.substr(
+                            st.accumulated_chat.size() - 2000);
+                      }
                     }
                   } else {
                     // 파싱/통신 실패 시 에러 원인 출력

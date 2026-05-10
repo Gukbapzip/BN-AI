@@ -167,6 +167,7 @@ class game
          * @brief Should be invoked whenever options change.
          */
         void on_options_changed();
+        std::vector<map_item_stack> find_nearby_items( int iRadius );
 
     public:
         void setup( bool load_world_modfiles = true );
@@ -764,7 +765,7 @@ class game
         };
 
         game::vmenu_ret list_items( const std::vector<map_item_stack> &item_list );
-        std::vector<map_item_stack> find_nearby_items( int iRadius );
+
         void reset_item_list_state( const catacurses::window &window, int height, bool bRadiusSort );
 
         game::vmenu_ret list_monsters( const std::vector<Creature *> &monster_list );

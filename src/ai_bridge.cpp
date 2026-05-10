@@ -199,20 +199,23 @@
             return out;
         }
 
-        std::string json_payload;
-        const auto tag_start = raw.find( "<action>" );
-        const auto tag_end = raw.find( "</action>" );
+        std::vector<std::string> json_payloads;
+        out.response.text = raw;
 
-        if( tag_start != std::string::npos && tag_end != std::string::npos && tag_end > tag_start ) {
-            // 태그 밖의 텍스트를 대화문으로 추출
-            out.response.text = raw.substr( 0, tag_start ) + raw.substr( tag_end + 9 );
-            // 태그 안의 내용을 JSON 파싱 대상으로 설정
-            json_payload = raw.substr( tag_start + 8, tag_end - tag_start - 8 );
-        } else {
-            out.response.text = raw;
+        size_t search_pos = 0;
+        while (true) {
+            const auto tag_start = out.response.text.find("<action>", search_pos);
+            if (tag_start == std::string::npos) break;
+            const auto tag_end = out.response.text.find("</action>", tag_start);
+            if (tag_end == std::string::npos) break;
+
+            json_payloads.push_back(out.response.text.substr(tag_start + 8, tag_end - tag_start - 8));
+            // 태그 내용 삭제
+            out.response.text.erase(tag_start, tag_end - tag_start + 9);
+            // search_pos는 업데이트하지 않아도 됨 (텍스트가 삭제되었으므로 현재 위치부터 다시 탐색)
         }
 
-        // AI가 지조작한 모든 태그 (<...>) 청소
+        // AI가 조작한 다른 모든 태그 (<...>) 청소
         size_t s, e;
         while( ( s = out.response.text.find( '<' ) ) != std::string::npos &&
                ( e = out.response.text.find( '>', s ) ) != std::string::npos ) {
@@ -221,14 +224,21 @@
 
         // Trim text
         out.response.text.erase( 0, out.response.text.find_first_not_of( " \t\r\n" ) );
-        out.response.text.erase( out.response.text.find_last_not_of( " \t\r\n" ) + 1 );
+        if (!out.response.text.empty()) {
+            out.response.text.erase( out.response.text.find_last_not_of( " \t\r\n" ) + 1 );
+        }
 
-        auto cursor = json_payload.find( '{' );
-        if( cursor == std::string::npos ) {
-            out.ok = true; // 태그는 있었으나 JSON이 없는 경우 대화문만 유효
+        if( json_payloads.empty() ) {
+            out.ok = true; // 태그는 없었으나 대화문만 유효
             return out;
         }
-        const auto &raw_json = json_payload; // 레거시 파서 호환용 별칭
+
+        for (const auto& json_payload : json_payloads) {
+            auto cursor = json_payload.find( '{' );
+            if( cursor == std::string::npos ) {
+                continue;
+            }
+            const auto &raw_json = json_payload; // 레거시 파서 호환용 별칭
 
         const auto skip_ws = [&]( ) {
             while( cursor < raw_json.size() ) {
@@ -380,11 +390,12 @@
                 break;
             }
         }
+        } // end of for loop over json_payloads
 
         if( out.response.text.empty() && out.response.commands.empty() ) {
             out.ok = false;
             out.error.code = error_code::invalid_response;
-            out.error.message = "unrecognized JSON response schema";
+            out.error.message = "unrecognized JSON response schema. RAW: " + raw;
             return out;
         }
 
@@ -463,21 +474,22 @@
             first_msg = false;
         }
 
-        std::string context = "";
-        if (!req.ctx.game_state_summary.empty()) context += "GAME_STATE:\\n" + escape_json(req.ctx.game_state_summary) + "\\n";
-        if (!req.ctx.proximity_npcs_summary.empty()) context += "PROXIMITY_NPCS:\\n" + escape_json(req.ctx.proximity_npcs_summary) + "\\n";
-        if (!req.ctx.npc_status_summary.empty()) context += "MY_STATUS:\\n" + escape_json(req.ctx.npc_status_summary) + "\\n";
-        if (!req.ctx.player_status_summary.empty()) context += "PLAYER_STATUS:\\n" + escape_json(req.ctx.player_status_summary) + "\\n";
-        if (!req.ctx.conversation_summary.empty()) context += "CONVERSATION:\\n" + escape_json(req.ctx.conversation_summary) + "\\n";
+        std::string context = "### [CURRENT_GAME_CONTEXT_START]\\n";
+        if (!req.ctx.proximity_npcs_summary.empty()) context += "#### [NEARBY_ENTITIES_JSON]\\n" + escape_json(req.ctx.proximity_npcs_summary) + "\\n---\\n";
+        if (!req.ctx.game_state_summary.empty()) context += "#### [ENVIRONMENT_JSON]\\n" + escape_json(req.ctx.game_state_summary) + "\\n---\\n";
+        if (!req.ctx.npc_status_summary.empty()) context += "#### [MY_DETAILED_STATUS_JSON]\\n" + escape_json(req.ctx.npc_status_summary) + "\\n---\\n";
+        if (!req.ctx.player_status_summary.empty()) context += "#### [PLAYER_STATUS_JSON]\\n" + escape_json(req.ctx.player_status_summary) + "\\n---\\n";
+        if (!req.ctx.conversation_summary.empty()) context += "#### [CONVERSATION_HISTORY]\\n" + escape_json(req.ctx.conversation_summary) + "\\n---\\n";
+        context += "### [CONTEXT_END]";
 
+        std::string full_user_content = "";
         if (!context.empty()) {
-            if (!first_msg) payload += ",";
-            payload += "{\"role\": \"user\", \"content\": \"" + context + "\"}";
-            first_msg = false;
+            full_user_content += context + "\\n\\n";
         }
+        full_user_content += "### [PLAYER_QUESTION]\\n" + escape_json(req.user);
 
         if (!first_msg) payload += ",";
-        payload += "{\"role\": \"user\", \"content\": \"" + escape_json(req.user) + "\"}";
+        payload += "{\"role\": \"user\", \"content\": \"" + full_user_content + "\"}";
         payload += "]"; 
 
         if (req.max_tokens >= 0) payload += ",\"max_tokens\": " + std::to_string(req.max_tokens);

@@ -47,7 +47,7 @@ option(DYNAMIC_LINKING
 option(USE_UNITY_BUILD "Use unity build." "OFF")
 option(JSON_FORMAT "Build JSON formatter" "OFF")
 option(CATA_CCACHE "Try to find and build with ccache" "ON")
-option(TESTS "Compile Cata's tests" "ON")
+option(TESTS "Compile Cata's tests" "OFF")
 find_program(DENO_BINARY deno)
 if(DENO_BINARY)
     set(LUA_DOCS_DEFAULT ON)
