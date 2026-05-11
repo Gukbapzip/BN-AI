@@ -11,10 +11,10 @@ TODO list based on estimated difficulty
 
 0. Connect local AI on BN Engine --- 100%
 1. Refine JSON for BN MoE agent (Minimize Hallucination) --- 50%
-2. Make NPC as natural lauguage assistant --- 20%
-3. Evaluate surrounding environment score, threats --- 10%
+2. Make NPC as natural lauguage assistant --- 30%
+3. Evaluate surrounding environment score, threats --- 20%
 4. Implement auto-crafting, auto-gathering by efficiant expedient --- 0%
-5. Auto-supply based on JSON / inventory / equipment --- 10%
+5. Auto-supply based on JSON / inventory / equipment --- 50%
 6. Integrate (0:3) for set priority themselves ---0%
 
 
