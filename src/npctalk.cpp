@@ -291,8 +291,65 @@ auto execute_ai_command_allowlist(dialogue &d, const ai_bridge::command &cmd)
   }
 }
 
-auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
-                         bool is_order) -> void {
+} // namespace
+
+namespace
+{
+
+/// Options to control which blocks of context are sent to the LLM.
+struct context_options {
+    bool include_status = false;    // Skills, detailed HP, etc.
+    bool include_inventory = false; // Full inventory list.
+    bool include_world = false;     // Nearby items/map data.
+    bool include_knowledge = false; // Recipe/disassembly info.
+    bool include_rules = false;     // NPC rules and orders.
+};
+
+/// Analyzes the user's latest input to determine what context is relevant.
+auto analyze_intent( const std::string &msg, bool is_order ) -> context_options
+{
+    auto opts = context_options{};
+    const auto low = []( std::string s ) {
+        std::transform( s.begin(), s.end(), s.begin(), ::tolower );
+        return s;
+    }( msg );
+
+    // Orders always get world and rules context
+    if( is_order ) {
+        opts.include_world = true;
+        opts.include_rules = true;
+    }
+
+    // Keyword detection for dynamic context injection
+    if( low.find( "inventory" ) != std::string::npos || low.find( "what do you have" ) != std::string::npos ) {
+        opts.include_inventory = true;
+    }
+    if( low.find( "status" ) != std::string::npos || low.find( "health" ) != std::string::npos ||
+        low.find( "skill" ) != std::string::npos || low.find( "how are you" ) != std::string::npos ) {
+        opts.include_status = true;
+    }
+    if( low.find( "around" ) != std::string::npos || low.find( "look" ) != std::string::npos ||
+        low.find( "get" ) != std::string::npos || low.find( "pick" ) != std::string::npos ||
+        low.find( "resupply" ) != std::string::npos ) {
+        opts.include_world = true;
+    }
+    if( low.find( "craft" ) != std::string::npos || low.find( "make" ) != std::string::npos ||
+        low.find( "fix" ) != std::string::npos || low.find( "disassemble" ) != std::string::npos ) {
+        opts.include_knowledge = true;
+        opts.include_inventory = true;
+    }
+
+    return opts;
+}
+
+} // namespace
+
+auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
+                          bool is_order ) -> void {
+  // Determine context relevance based on last message
+  const auto last_msg = req.history.empty() ? "" : req.history.back().content;
+  const auto opts = analyze_intent( last_msg, is_order );
+
   const auto action_example =
       std::string{R"(<action>{"action": "follow"}</action>)"};
   std::string system =
@@ -395,20 +452,26 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
     return s_json;
   };
 
-  auto get_nearby_items_json = [](const tripoint &pos) -> std::string {
+  // ── Modular JSON Generators ───────────────────────────────────────────
+
+  auto get_nearby_items_json = []( const tripoint &pos, bool enabled ) -> std::string {
+    if( !enabled ) {
+        return "[]";
+    }
     std::string items_json = "[";
     bool first_item = true;
-    for (const auto &p : get_map().points_in_radius(pos, 10)) {
-      if (get_map().sees(pos, p, 10)) {
-        auto stack = get_map().i_at(p);
-        for (const auto &it : stack) {
-          if (!first_item)
+    for( const auto &p : get_map().points_in_radius( pos, 10 ) ) {
+      if( get_map().sees( pos, p, 10 ) ) {
+        auto stack = get_map().i_at( p );
+        for( const auto &it : stack ) {
+          if( !first_item ) {
             items_json += ", ";
+          }
           items_json += string_format(
               "{\"name\": \"%s\", \"id\": \"%s\", \"category\": \"%s\", "
               "\"dist\": %d}",
               it->tname().c_str(), it->typeId().str().c_str(),
-              it->get_category().get_id().str().c_str(), rl_dist(pos, p));
+              it->get_category().get_id().str().c_str(), rl_dist( pos, p ) );
           first_item = false;
         }
       }
@@ -417,17 +480,19 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
     return items_json;
   };
 
-  auto get_inv_json = [](const player *p) -> std::string {
+  auto get_inv_json = []( const player *p, bool enabled ) -> std::string {
+    if( !enabled ) {
+        return "[]";
+    }
     std::string i_json = "[";
-    const auto &items = const_cast<player *>(p)->inv_dump();
-    // Increase limit to 100 to ensure nothing is missed
-    for (size_t i = 0; i < std::min<size_t>(items.size(), 100); ++i) {
+    const auto &items = const_cast<player *>( p )->inv_dump();
+    for( size_t i = 0; i < std::min<size_t>( items.size(), 100 ); ++i ) {
       i_json += string_format(
           "{\"id\": \"%s\", \"name\": \"%s\", \"category\": \"%s\"}, ",
           items[i]->typeId().str().c_str(), items[i]->tname().c_str(),
-          items[i]->get_category().get_id().str().c_str());
+          items[i]->get_category().get_id().str().c_str() );
     }
-    if (i_json.size() > 1) {
+    if( i_json.size() > 1 ) {
       i_json.pop_back();
       i_json.pop_back();
     }
@@ -515,40 +580,53 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
   };
 
   std::ostringstream oss_npc;
-  oss_npc << "{\"skills\": " << get_skills_json(d.beta)
-          << ", \"health\": " << get_hp_json(d.beta)
-          << ", \"stamina\": " << d.beta->get_stamina()
+  oss_npc << "{\"stamina\": " << d.beta->get_stamina()
           << ", \"calories\": " << d.beta->get_stored_kcal()
-          << ", \"thirst\": " << d.beta->get_thirst()
-          << ", \"fatigue\": " << d.beta->get_fatigue() << ", \"pain\": \""
-          << d.beta->get_pain_description().first << "\""
-          << ", \"weapon\": " << get_weapon_json(d.beta->used_weapon(), d.beta)
-          << ", \"inventory\": " << get_inv_json(d.beta)
-          << ", \"armor\": " << get_clothing_json(d.beta)
-          << ", \"nearby_items\": " << get_nearby_items_json(d.beta->pos())
-          << ", \"last_action\": {\"command\": \""
+          << ", \"fatigue\": " << d.beta->get_fatigue() 
+          << ", \"pain\": \"" << d.beta->get_pain_description().first << "\""
+          << ", \"weapon\": " << get_weapon_json(d.beta->used_weapon(), d.beta);
+
+  if (opts.include_status) {
+      oss_npc << ", \"skills\": " << get_skills_json(d.beta)
+              << ", \"health\": " << get_hp_json(d.beta)
+              << ", \"armor\": " << get_clothing_json(d.beta);
+  }
+
+  if (opts.include_inventory) {
+      oss_npc << ", \"inventory\": " << get_inv_json(d.beta, true);
+  } else {
+      oss_npc << ", \"inventory\": \"[USE_ACTION_TO_CHECK]\"";
+  }
+
+  if (opts.include_world) {
+      oss_npc << ", \"nearby_items\": " << get_nearby_items_json(d.beta->pos(), true);
+  } else {
+      oss_npc << ", \"nearby_items\": \"[USE_ACTION_TO_CHECK]\"";
+  }
+
+  oss_npc << ", \"last_action\": {\"command\": \""
           << get_talk_ai_state(&d).last_executed_action
-          << "\", \"status\": \"verified_success\"}"
-          << ", \"item_knowledge\": {";
+          << "\", \"status\": \"verified_success\"}";
 
-  // 모든 인벤토리 아이템에 대한 지식 추가
-  std::set<itype_id> known_ids;
-  if (!d.beta->used_weapon().is_null()) {
-    known_ids.insert(d.beta->used_weapon().typeId());
-  }
-  for (const auto &it : d.beta->inv_dump()) {
-    known_ids.insert(it->typeId());
+  if (opts.include_knowledge) {
+      oss_npc << ", \"item_knowledge\": {";
+      std::set<itype_id> known_ids;
+      if (!d.beta->used_weapon().is_null()) {
+        known_ids.insert(d.beta->used_weapon().typeId());
+      }
+      for (const auto &it : d.beta->inv_dump()) {
+        known_ids.insert(it->typeId());
+      }
+      bool first_k = true;
+      for (const auto &id : known_ids) {
+        if (!first_k) oss_npc << ", ";
+        oss_npc << "\"" << id.str() << "\": " << get_item_knowledge_json(id);
+        first_k = false;
+      }
+      oss_npc << "}";
   }
 
-  bool first_k = true;
-  for (const auto &id : known_ids) {
-    if (!first_k)
-      oss_npc << ", ";
-    oss_npc << "\"" << id.str() << "\": " << get_item_knowledge_json(id);
-    first_k = false;
-  }
-
-  oss_npc << "}}";
+  oss_npc << "}";
   req.ctx.npc_status_summary = oss_npc.str();
 
   std::ostringstream oss_player;
