@@ -64,7 +64,6 @@ auto is_resupply_item( const itype_id &item_id ) -> bool
 auto build() -> void
 {
     if( s_built ) {
-        debugmsg( "npc_weapon_cache::build() called more than once without reset()" );
         return;
     }
 
@@ -137,13 +136,10 @@ auto compute_resupply_plan( const npc &n ) -> std::optional<resupply_plan>
     }
 
     // ── 1a. Calculate dynamic thresholds ─────────────────────────────────
-    // Base: Essential for immediate combat.
-    // Surplus: Hoarding target if free weight allows.
-    const int base_mags = info->uses_detachable_magazine ? 3 : 0;
+    // For detachable magazines, we scavenge up to 6 mags.
+    // For integral magazines (like internal tube), mags count is irrelevant (0).
     const int surplus_mags = info->uses_detachable_magazine ? 6 : 0;
-    
     const int capacity = weapon.ammo_capacity();
-    const int base_ammo = std::max( 20, capacity * 4 );
     const int surplus_ammo = std::max( 100, capacity * 10 );
 
     resupply_plan plan;

@@ -175,24 +175,30 @@ static void print_keybindings( const catacurses::window &w )
 {
     const int winx = getmaxx( w );
 
-    const std::string col0 = _( "[L] Look at" );
-    const std::string col1 = _( "[S] Size up stats" );
+    const std::string col0 = _( "[L] Look" );
+    const std::string col1 = _( "[S] Stats" );
     const std::string col2 = _( "[Y] Yell" );
-    const std::string col3 = _( "[O] Check opinion" );
+    const std::string col3 = _( "[O] Opinion" );
+    const std::string col4 = _( "[Return] Chat" );
+    const std::string col5 = _( "[c] Command" );
+    const std::string col6 = _( "[C] Craft" );
 
-    const int col0_width = std::max( static_cast<int>( col0.size() ),
-                                     static_cast<int>( col2.size() ) );
-    const int col1_width = std::max( static_cast<int>( col1.size() ),
-                                     static_cast<int>( col3.size() ) );
-
-    const int grid_width = col0_width + 2 + col1_width;
-    const int x = std::max( 1, winx - 1 - grid_width );
+    const int col_w = 15;
+    const int x_base = std::max( 1, winx - 1 - ( col_w * 3 ) );
     const int y = 1;
 
-    mvwprintz( w, point( x, y ), c_light_gray, col0 );
-    mvwprintz( w, point( x + col0_width + 2, y ), c_light_gray, col1 );
-    mvwprintz( w, point( x, y + 1 ), c_light_gray, col2 );
-    mvwprintz( w, point( x + col0_width + 2, y + 1 ), c_light_gray, col3 );
+    // Row 1
+    mvwprintz( w, point( x_base, y ), c_light_gray, col0 );
+    mvwprintz( w, point( x_base + col_w, y ), c_light_gray, col1 );
+    mvwprintz( w, point( x_base + col_w * 2, y ), c_white, col4 );
+    
+    // Row 2
+    mvwprintz( w, point( x_base, y + 1 ), c_light_gray, col2 );
+    mvwprintz( w, point( x_base + col_w, y + 1 ), c_light_gray, col3 );
+    mvwprintz( w, point( x_base + col_w * 2, y + 1 ), c_light_cyan, col5 );
+    
+    // Row 3
+    mvwprintz( w, point( x_base + col_w * 2, y + 2 ), c_yellow, col6 );
 }
 
 void dialogue_window::cache_msg( const std::string &msg, size_t idx )

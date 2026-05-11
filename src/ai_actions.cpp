@@ -9,6 +9,10 @@
 #include "translations.h"
 #include "debug.h"
 #include "npc_weapon_cache.h"
+#include "recipe.h"
+#include "recipe_dictionary.h"
+#include "crafting.h"
+#include "type_id.h"
 
 #include <algorithm>
 #include <ranges>
@@ -306,6 +310,27 @@ auto execute_resupply( npc &n ) -> std::string
         mags_picked, ammo_picked );
     ai_log( string_format( "[RESUPPLY] %s — %s", n.name, final_result ) );
     return final_result;
+}
+
+/// Deterministic NPC crafting execution.
+/// recipe_id must come from the engine's static registry — no natural language.
+auto execute_craft( npc &n, const recipe_id &id ) -> std::string
+{
+    const recipe &rec = *id;
+    if( !rec ) {
+        ai_log( string_format( "[CRAFT] Recipe id '%s' not found in static registry.", id.str() ) );
+        return string_format( _( "Recipe '%s' is not valid." ), id.c_str() );
+    }
+
+    if( !n.can_make( &rec ) ) {
+        ai_log( string_format( "[CRAFT] %s cannot make '%s': missing requirements.",
+                               n.name, id.str() ) );
+        return string_format( _( "I don't have what I need to craft %s." ), rec.result_name() );
+    }
+
+    n.make_craft( id, 1, n.pos() );
+    ai_log( string_format( "[CRAFT] %s started crafting '%s'.", n.name, rec.result_name() ) );
+    return string_format( _( "Starting to craft %s." ), rec.result_name() );
 }
 
 } // namespace ai_actions
