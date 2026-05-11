@@ -5,7 +5,7 @@ set(RESOURCE_RC ${CMAKE_SOURCE_DIR}/src/resource.rc)
 file(GLOB CATACLYSM_BN_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.cpp)
 
 list(REMOVE_ITEM CATACLYSM_BN_SOURCES ${MAIN_CPP} ${MESSAGES_CPP})
-# Added ai_actions.cpp and npc_command_parser.cpp - triggering re-configure.
+# Added ai_actions.cpp, npc_command_parser.cpp, npc_weapon_cache.cpp - triggering re-configure.
 
 # Lua binding translation units are template-heavy and primarily run at startup;
 # compile them with no optimization to reduce build times.

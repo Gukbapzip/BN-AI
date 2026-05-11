@@ -77,6 +77,7 @@
 #include "mutation.h"
 #include "npc.h"
 #include "npc_class.h"
+#include "npc_weapon_cache.h"
 #include "omdata.h"
 #include "overlay_ordering.h"
 #include "overmap.h"
@@ -578,6 +579,7 @@ void DynamicDataLoader::unload_data()
     harvest_list::reset();
     item_action_generator::generator().reset();
     item_controller->reset();
+    npc_weapon_cache::reset();
     json_flag::reset();
     json_trait_flag::reset();
     MapExtras::reset();
@@ -673,6 +675,12 @@ void DynamicDataLoader::finalize_loaded_data( loading_ui &ui )
                 _( "Items" ), []()
                 {
                     item_controller->finalize();
+                }
+            },
+            {
+                _( "Weapon cache" ), []()
+                {
+                    npc_weapon_cache::build();
                 }
             },
             {

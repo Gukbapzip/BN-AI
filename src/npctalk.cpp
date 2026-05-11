@@ -17,9 +17,8 @@
 #include <vector>
 
 #include "AI_Bridge.h"
-#include "ai_actions.h"
-#include "npc_command_parser.h"
 #include "activity_type.h"
+#include "ai_actions.h"
 #include "auto_pickup.h"
 #include "avatar.h"
 #include "bionics.h"
@@ -49,9 +48,6 @@
 #include "item_category.h"
 #include "item_contents.h"
 #include "item_factory.h"
-#include "monstergenerator.h"
-#include "recipe.h"
-#include "ai_actions.h"
 #include "itype.h"
 #include "json.h"
 #include "line.h"
@@ -71,6 +67,7 @@
 #include "mutation.h"
 #include "npc.h"
 #include "npc_class.h"
+#include "npc_command_parser.h"
 #include "npctalk.h"
 #include "npctrade.h"
 #include "options.h"
@@ -306,24 +303,38 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
   if (is_order) {
     system +=
         "## COMMAND FORMAT (CRITICAL):\n"
-        "- If you agree to an order, you MUST append the action tag at the very end.\n"
-        "- Format: <action>{\"action\": \"action_name\", \"target\": \"target_id\"}</action>\n"
-        "- Example: \"Sure, I'll pick up those items. <action>{\"action\": \"pick_up\", \"target\": \"machete\"}</action>\"\n"
-        "- For items of a certain category, use the category name as the target.\n"
-        "- Valid categories for pick_up: guns, magazines, ammo, weapons, tools, tools_entry, tools_workshop, tools_cooking, tools_chemistry, tools_farming, deployables, electronics, clothing, food, cooking_ingredients, drugs, books, spellbooks, mods, mutagen, bionics, veh_parts, other, fuel, seeds, chems, battery, spare_parts, scrap_metal, scrap_electronics, scrap_fabric, scrap_wood, scrap_plastic, scrap_ceramics, scrap_glass, valuables, rocks, soil, container, artifacts, maps.\n"
-        "- Example: \"I'll get the containers. <action>{\"action\": \"pick_up\", \"target\": \"container\"}</action>\"\n"
-        "## ALLOWED ACTIONS: follow, guard, stop_guard, pick_up, trade, give_aid, "
+        "- If you agree to an order, you MUST append the action tag at the "
+        "very end.\n"
+        "- Format: <action>{\"action\": \"action_name\", \"target\": "
+        "\"target_id\"}</action>\n"
+        "- Example: \"Sure, I'll pick up those items. <action>{\"action\": "
+        "\"pick_up\", \"target\": \"machete\"}</action>\"\n"
+        "- For items of a certain category, use the category name as the "
+        "target.\n"
+        "- Valid categories for pick_up: guns, magazines, ammo, weapons, "
+        "tools, tools_entry, tools_workshop, tools_cooking, tools_chemistry, "
+        "tools_farming, deployables, electronics, clothing, food, "
+        "cooking_ingredients, drugs, books, spellbooks, mods, mutagen, "
+        "bionics, veh_parts, other, fuel, seeds, chems, battery, spare_parts, "
+        "scrap_metal, scrap_electronics, scrap_fabric, scrap_wood, "
+        "scrap_plastic, scrap_ceramics, scrap_glass, valuables, rocks, soil, "
+        "container, artifacts, maps.\n"
+        "- Example: \"I'll get the containers. <action>{\"action\": "
+        "\"pick_up\", \"target\": \"container\"}</action>\"\n"
+        "## ALLOWED ACTIONS: follow, guard, stop_guard, pick_up, trade, "
+        "give_aid, "
         "sort_loot, do_construction, do_butcher, revert_activity, morale_chat, "
         "npc_thankful, engage_all, engage_none, engage_close, aim_precise, "
         "aim_spray, use_guns, stop_guns, use_grenades, stop_grenades.\n";
   }
 
-  system += "## RULES:\n"
-            "- CRITICAL: Use skill levels from context. NEVER invent levels.\n"
-            "- ALWAYS check [MY_DETAILED_STATUS_JSON].\n"
-            "- ABSOLUTE TRUTH: The JSON data in [CURRENT_GAME_CONTEXT] is the "
-            "ONLY factual source. Trust it 100% over memory.\n"
-            "- When an order is given, prioritize executing it over long chat.\n";
+  system +=
+      "## RULES:\n"
+      "- CRITICAL: Use skill levels from context. NEVER invent levels.\n"
+      "- ALWAYS check [MY_DETAILED_STATUS_JSON].\n"
+      "- ABSOLUTE TRUTH: The JSON data in [CURRENT_GAME_CONTEXT] is the "
+      "ONLY factual source. Trust it 100% over memory.\n"
+      "- When an order is given, prioritize executing it over long chat.\n";
 
   req.system = system;
 
@@ -391,11 +402,13 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
       if (get_map().sees(pos, p, 10)) {
         auto stack = get_map().i_at(p);
         for (const auto &it : stack) {
-          if (!first_item) items_json += ", ";
-          items_json += string_format("{\"name\": \"%s\", \"id\": \"%s\", \"category\": \"%s\", \"dist\": %d}", 
-                                      it->tname().c_str(), it->typeId().str().c_str(),
-                                      it->get_category().get_id().str().c_str(),
-                                      rl_dist(pos, p));
+          if (!first_item)
+            items_json += ", ";
+          items_json += string_format(
+              "{\"name\": \"%s\", \"id\": \"%s\", \"category\": \"%s\", "
+              "\"dist\": %d}",
+              it->tname().c_str(), it->typeId().str().c_str(),
+              it->get_category().get_id().str().c_str(), rl_dist(pos, p));
           first_item = false;
         }
       }
@@ -409,10 +422,10 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
     const auto &items = const_cast<player *>(p)->inv_dump();
     // Increase limit to 100 to ensure nothing is missed
     for (size_t i = 0; i < std::min<size_t>(items.size(), 100); ++i) {
-      i_json += string_format("{\"id\": \"%s\", \"name\": \"%s\", \"category\": \"%s\"}, ", 
-                              items[i]->typeId().str().c_str(),
-                              items[i]->tname().c_str(),
-                              items[i]->get_category().get_id().str().c_str());
+      i_json += string_format(
+          "{\"id\": \"%s\", \"name\": \"%s\", \"category\": \"%s\"}, ",
+          items[i]->typeId().str().c_str(), items[i]->tname().c_str(),
+          items[i]->get_category().get_id().str().c_str());
     }
     if (i_json.size() > 1) {
       i_json.pop_back();
@@ -513,7 +526,8 @@ auto populate_ai_context(ai_bridge::request &req, const dialogue &d,
           << ", \"inventory\": " << get_inv_json(d.beta)
           << ", \"armor\": " << get_clothing_json(d.beta)
           << ", \"nearby_items\": " << get_nearby_items_json(d.beta->pos())
-          << ", \"last_action\": {\"command\": \"" << get_talk_ai_state(&d).last_executed_action 
+          << ", \"last_action\": {\"command\": \""
+          << get_talk_ai_state(&d).last_executed_action
           << "\", \"status\": \"verified_success\"}"
           << ", \"item_knowledge\": {";
 
@@ -2670,7 +2684,8 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
 
     req.user = "Generate the NPC's next reply for topic: " + topic.id;
 
-    ai_actions::ai_log(string_format("[CONTEXT] NPC Summary: %s", req.ctx.npc_status_summary.c_str()));
+    ai_actions::ai_log(string_format("[CONTEXT] NPC Summary: %s",
+                                     req.ctx.npc_status_summary.c_str()));
     ai_actions::ai_log(string_format("[CONTEXT] Prompt: %s", req.user.c_str()));
     ai_state.inflight_id = bridge.enqueue(
         std::move(req), [dlg = this](const ai_bridge::completion &c) {
@@ -2684,7 +2699,8 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
             ai_actions::ai_log("[RAW_RESPONSE] " + c.result.response.text);
           } else {
             st.reply_text = "&[System] : " + c.result.error.message;
-            ai_actions::ai_log("[ERROR] API Request Failed: " + c.result.error.message);
+            ai_actions::ai_log("[ERROR] API Request Failed: " +
+                               c.result.error.message);
           }
         });
   }
@@ -2805,16 +2821,20 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
             npc *n = dynamic_cast<npc *>(beta);
             for (const auto &cmd : ai_state.pending_cmds) {
               ai_state.last_executed_action = cmd.action;
-              
+
               // 1. Engine-side modular actions
               if (n != nullptr) {
-                ai_actions::ai_log(string_format("[PARSED_ACTION] %s -> %s", cmd.action.c_str(), cmd.target.c_str()));
-                std::string result = ai_actions::execute_command(*n, cmd.action, cmd.target);
+                ai_actions::ai_log(string_format("[PARSED_ACTION] %s -> %s",
+                                                 cmd.action.c_str(),
+                                                 cmd.target.c_str()));
+                std::string result =
+                    ai_actions::execute_command(*n, cmd.action, cmd.target);
                 if (!result.empty()) {
-                    ai_actions::ai_log(string_format("[EXECUTOR] %s", result.c_str()));
+                  ai_actions::ai_log(
+                      string_format("[EXECUTOR] %s", result.c_str()));
                 }
               }
-              
+
               // 2. Legacy/Toggle allowlist actions
               execute_ai_command_allowlist(*this, cmd);
             }
@@ -2857,25 +2877,24 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
             }
 
             // ── Deterministic command bypass ─────────────────────────────
-            if( is_order ) {
-              if( auto cmd = npc_cmd::try_parse( user_text ) ) {
-                ai_actions::ai_log(
-                    "[DETERMINISTIC] Matched: " + cmd->action + " -> " + cmd->target );
-                npc *n = dynamic_cast<npc *>( beta );
-                if( n != nullptr ) {
+            if (is_order) {
+              if (auto cmd = npc_cmd::try_parse(user_text)) {
+                ai_actions::ai_log("[DETERMINISTIC] Matched: " + cmd->action +
+                                   " -> " + cmd->target);
+                npc *n = dynamic_cast<npc *>(beta);
+                if (n != nullptr) {
                   const std::string result =
-                      ai_actions::execute_command( *n, cmd->action, cmd->target );
-                  ai_actions::ai_log( "[EXECUTOR] " + result );
+                      ai_actions::execute_command(*n, cmd->action, cmd->target);
+                  ai_actions::ai_log("[EXECUTOR] " + result);
                   // Show a brief in-game confirmation - no LLM needed.
-                  d_win.add_to_history(
-                      string_format( pgettext( "npc says something", "%s: %s" ),
-                                     colorize( beta->name, c_light_green ),
-                                     _( "On it." ) ) );
+                  d_win.add_to_history(string_format(
+                      pgettext("npc says something", "%s: %s"),
+                      colorize(beta->name, c_light_green), _("On it.")));
                 }
                 // Execute any allowlist toggle that also matches (e.g. follow).
                 execute_ai_command_allowlist(
-                    *this, ai_bridge::command{ cmd->action, cmd->target } );
-                return talk_topic( "TALK_DONE" );
+                    *this, ai_bridge::command{cmd->action, cmd->target});
+                return talk_topic("TALK_DONE");
               }
             }
             // ── LLM path (unchanged below) ───────────────────────────────
@@ -2891,21 +2910,30 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
             populate_ai_context(req, *this, is_order);
 
             if (is_order) {
-              req.user = "### [DIRECT_COMMAND]\nPlayer: " + user_text +
-                         "\n\nConversation history:\n" +
-                         (ai_state.accumulated_chat.empty() ? "(none)\n" : ai_state.accumulated_chat) +
-                         "\nRespond as the NPC with a very short confirmation. Then, YOU MUST output the <action> tag to execute the order.\n"
-                         "Example: \"Got it.\" <action>{\"action\": \"pick_up\", \"target\": \"container\"}</action>";
-            } else {
               req.user =
-                  "### [CASUAL_CHAT]\nPlayer: " + user_text +
+                  "### [DIRECT_COMMAND]\nPlayer: " + user_text +
                   "\n\nConversation history:\n" +
-                  (ai_state.accumulated_chat.empty() ? "(none)\n" : ai_state.accumulated_chat) +
-                  "\nRespond as the NPC. DO NOT use <action> tags.";
+                  (ai_state.accumulated_chat.empty()
+                       ? "(none)\n"
+                       : ai_state.accumulated_chat) +
+                  "\nRespond as the NPC with a very short confirmation. Then, "
+                  "YOU MUST output the <action> tag to execute the order.\n"
+                  "Example: \"Got it.\" <action>{\"action\": \"pick_up\", "
+                  "\"target\": \"container\"}</action>";
+            } else {
+              req.user = "### [CASUAL_CHAT]\nPlayer: " + user_text +
+                         "\n\nConversation history:\n" +
+                         (ai_state.accumulated_chat.empty()
+                              ? "(none)\n"
+                              : ai_state.accumulated_chat) +
+                         "\nRespond as the NPC. DO NOT use <action> tags.";
             }
 
-            ai_actions::ai_log(string_format("[CONTEXT] NPC Summary: %s", req.ctx.npc_status_summary.c_str()));
-            ai_actions::ai_log(string_format("[CONTEXT] Prompt: %s", req.user.c_str()));
+            ai_actions::ai_log(
+                string_format("[CONTEXT] NPC Summary: %s",
+                              req.ctx.npc_status_summary.c_str()));
+            ai_actions::ai_log(
+                string_format("[CONTEXT] Prompt: %s", req.user.c_str()));
             ai_state.inflight_id = bridge.enqueue(
                 std::move(req), [dlg = this](const ai_bridge::completion &c) {
                   auto &st = get_talk_ai_state(dlg);
@@ -2915,10 +2943,12 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
 
                   if (c.result.ok) {
                     st.reply_text = c.result.response.text;
-                    ai_actions::ai_log("[RAW_RESPONSE] " + c.result.response.text);
+                    ai_actions::ai_log("[RAW_RESPONSE] " +
+                                       c.result.response.text);
                     if (st.is_last_input_order) {
                       st.pending_cmds = c.result.response.commands;
-                      // 명령에 대한 응답은 대화 기록에 남기지 않아 메모리를 절약합니다.
+                      // 명령에 대한 응답은 대화 기록에 남기지 않아 메모리를
+                      // 절약합니다.
                     } else {
                       st.pending_cmds.clear();
                       // 일반 대화인 경우에만 NPC의 대화 누적 및 기록 제한
@@ -2933,7 +2963,8 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
                     // 파싱/통신 실패 시 에러 원인 출력
                     st.reply_text =
                         "&[System] AI 에러: " + c.result.error.message;
-                    ai_actions::ai_log("[ERROR] API Request Failed: " + c.result.error.message);
+                    ai_actions::ai_log("[ERROR] API Request Failed: " +
+                                       c.result.error.message);
                     st.pending_cmds.clear();
                   }
                 });

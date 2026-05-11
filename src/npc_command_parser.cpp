@@ -219,6 +219,33 @@ auto try_parse_combat( const std::string &lower ) -> std::optional<parsed_comman
 
 } // anonymous namespace
 
+// ─── resupply pattern ───────────────────────────────────────────────────────────
+
+namespace {
+
+auto try_parse_resupply( const std::string &lower ) -> std::optional<parsed_command>
+{
+    // All phrases that unambiguously mean "go get your ammo/magazines".
+    constexpr std::array<std::string_view, 8> PATTERNS = { {
+        "resupply yourself",
+        "resupply ammo",
+        "resupply magazines",
+        "resupply weapon",
+        "resupply",
+        "restock",
+        "get ammo",
+        "reload yourself",
+    } };
+    for( const auto &pat : PATTERNS ) {
+        if( starts_with_lower( lower, pat ) ) {
+            return parsed_command{ "resupply", {} };
+        }
+    }
+    return std::nullopt;
+}
+
+} // anonymous namespace
+
 // ─── public API ─────────────────────────────────────────────────────────────
 
 auto try_parse( const std::string &raw_text ) -> std::optional<parsed_command>
@@ -237,6 +264,9 @@ auto try_parse( const std::string &raw_text ) -> std::optional<parsed_command>
     }
 
     if( auto cmd = try_parse_pickup( trimmed ) ) {
+        return cmd;
+    }
+    if( auto cmd = try_parse_resupply( trimmed ) ) {
         return cmd;
     }
     if( auto cmd = try_parse_movement( trimmed ) ) {

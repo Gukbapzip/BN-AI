@@ -19,4 +19,9 @@ auto execute_command( npc &n, const std::string &action, const std::string &targ
 // Individual actions
 auto pick_up( npc &n, const std::string &item_id ) -> std::string;
 
+/// Deterministic resupply: compute plan from weapon cache, scan nearby tiles,
+/// pick up matching magazines and ammo until shortages are satisfied.
+/// Does NOT use LLM logic. Pure engine-side execution.
+auto execute_resupply( npc &n ) -> std::string;
+
 } // namespace ai_actions
