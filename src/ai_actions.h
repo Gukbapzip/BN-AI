@@ -5,6 +5,8 @@ class npc;
 
 namespace ai_actions {
 
+void ai_log( const std::string &message );
+
 /** 
  * Executes an AI-requested action on the engine side.
  * @param n The NPC performing the action.
