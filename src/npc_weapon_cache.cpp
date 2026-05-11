@@ -119,11 +119,6 @@ auto reset() -> void
 
 // ─── Resupply plan ───────────────────────────────────────────────────────────
 
-/// How many total magazines the NPC should aim to have (including the one in the gun).
-constexpr int MIN_TOTAL_MAGAZINES = 3;
-/// How many rounds of ammo the NPC should have stocked as a minimum (inventory + loaded).
-constexpr int MIN_AMMO_ROUNDS = 60;
-
 auto compute_resupply_plan( const npc &n ) -> std::optional<resupply_plan>
 {
     if( !s_built ) {
@@ -140,6 +135,16 @@ auto compute_resupply_plan( const npc &n ) -> std::optional<resupply_plan>
     if( !info ) {
         return std::nullopt;
     }
+
+    // ── 1a. Calculate dynamic thresholds ─────────────────────────────────
+    // Base: Essential for immediate combat.
+    // Surplus: Hoarding target if free weight allows.
+    const int base_mags = info->uses_detachable_magazine ? 3 : 0;
+    const int surplus_mags = info->uses_detachable_magazine ? 6 : 0;
+    
+    const int capacity = weapon.ammo_capacity();
+    const int base_ammo = std::max( 20, capacity * 4 );
+    const int surplus_ammo = std::max( 100, capacity * 10 );
 
     resupply_plan plan;
     plan.weapon_id = weapon_id;
@@ -164,19 +169,38 @@ auto compute_resupply_plan( const npc &n ) -> std::optional<resupply_plan>
         const bool has_loaded_mag = weapon.magazine_current() != nullptr;
         const int effective_mags = held_mags + ( has_loaded_mag ? 1 : 0 );
 
-        // Initial desired count
-        mag_shortage.missing = std::max( 0, MIN_TOTAL_MAGAZINES - effective_mags );
+        // Shortage is calculated against the SURPLUS target
+        mag_shortage.missing = std::max( 0, surplus_mags - effective_mags );
 
         // Cap by weight
         if( mag_shortage.missing > 0 && !info->compatible_magazines.empty() ) {
             const itype_id &mid = *info->compatible_magazines.begin();
             if( !mid.is_empty() ) {
                 const itype &itp = mid.obj();
-                if( itp.weight > units::mass{} ) {
-                    int affordable = static_cast<int>( free_weight.value() / itp.weight.value() );
+                
+                // ── Magazine Weight Heuristic ────────────────────────────
+                // Primary: Real item weight
+                units::mass m_weight = itp.weight;
+
+                // Fallback / Approximation: (ammo_weight * capacity * 1.1)
+                if( m_weight <= units::mass{} ) {
+                    units::mass ammo_w = units::mass{};
+                    if( !info->compatible_ammo.empty() ) {
+                        const itype_id &aid = *info->compatible_ammo.begin();
+                        if( !aid.is_empty() ) {
+                            ammo_w = aid.obj().weight;
+                        }
+                    }
+                    // Get magazine capacity (falls back to weapon capacity if magazine-specific data missing)
+                    int mag_cap = itp.magazine ? itp.magazine->capacity : weapon.ammo_capacity();
+                    m_weight = ammo_w * mag_cap * 1.1;
+                }
+
+                if( m_weight > units::mass{} ) {
+                    int affordable = static_cast<int>( free_weight.value() / m_weight.value() );
                     mag_shortage.missing = std::min( mag_shortage.missing, affordable );
                     // Deduct weight of magazines we intend to pick up
-                    free_weight -= itp.weight * mag_shortage.missing;
+                    free_weight -= m_weight * mag_shortage.missing;
                 }
             }
         }
@@ -201,8 +225,8 @@ auto compute_resupply_plan( const npc &n ) -> std::optional<resupply_plan>
         const int loaded_rounds = weapon.ammo_remaining();
         const int effective_rounds = held_rounds + loaded_rounds;
 
-        // Initial desired count
-        ammo_shortage.missing = std::max( 0, MIN_AMMO_ROUNDS - effective_rounds );
+        // Shortage is calculated against the SURPLUS target
+        ammo_shortage.missing = std::max( 0, surplus_ammo - effective_rounds );
 
         // Cap by weight
         if( ammo_shortage.missing > 0 && !info->compatible_ammo.empty() ) {
@@ -218,10 +242,11 @@ auto compute_resupply_plan( const npc &n ) -> std::optional<resupply_plan>
         plan.ammo = std::move( ammo_shortage );
     }
 
-    // satisfied when no more can/should be picked up
-    const bool mags_ok  = !plan.magazines || plan.magazines->missing == 0;
-    const bool ammo_ok  = !plan.ammo      || plan.ammo->missing == 0;
-    plan.is_satisfied   = mags_ok && ammo_ok;
+    // A plan is satisfied if no more items can/should be picked up 
+    // given current weight constraints and hoarding targets.
+    const bool mags_done = !plan.magazines || plan.magazines->missing == 0;
+    const bool ammo_done = !plan.ammo      || plan.ammo->missing == 0;
+    plan.is_satisfied    = mags_done && ammo_done;
 
     return plan;
 }

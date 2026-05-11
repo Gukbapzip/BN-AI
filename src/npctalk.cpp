@@ -293,8 +293,7 @@ auto execute_ai_command_allowlist(dialogue &d, const ai_bridge::command &cmd)
 
 } // namespace
 
-namespace
-{
+namespace {
 
 /// Options to control which blocks of context are sent to the LLM.
 struct context_options {
@@ -344,11 +343,10 @@ auto analyze_intent( const std::string &msg, bool is_order ) -> context_options
 
 } // namespace
 
-auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
+static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
                           bool is_order ) -> void {
-  // Determine context relevance based on last message
-  const auto last_msg = req.history.empty() ? "" : req.history.back().content;
-  const auto opts = analyze_intent( last_msg, is_order );
+  // Determine context relevance based on last message (req.user is the prompt)
+  const auto opts = analyze_intent( req.user, is_order );
 
   const auto action_example =
       std::string{R"(<action>{"action": "follow"}</action>)"};
@@ -671,7 +669,7 @@ auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
   req.ctx.conversation_summary = ""; // Managed dynamically
 }
 
-[[maybe_unused]] auto export_cleaned_game_json() -> void {
+[[maybe_unused]] static auto export_cleaned_game_json() -> void {
   std::ofstream out("cataclysm_bn_full_knowledge.jsonl");
   if (!out.is_open())
     return;
@@ -745,8 +743,6 @@ auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
 
   out.close();
 }
-
-} // namespace
 
 static std::map<std::string, json_talk_topic> json_talk_topics;
 
