@@ -604,6 +604,8 @@ void DynamicDataLoader::unload_data()
     overmap::reset_oter_id_migrations();
     profession::reset();
     quality::reset();
+    npc_recipe_cache::reset();
+    npc_weapon_cache::reset();
     recipe_dictionary::reset();
     recipe_group::reset();
     requirement_data::reset();
@@ -725,7 +727,7 @@ void DynamicDataLoader::finalize_loaded_data( loading_ui &ui )
             { _( "Mutations" ), &mutation_branch::finalize },
             { _( "NPC AI Cache" ), []() {
                 npc_recipe_cache::init();
-                npc_weapon_cache::init();
+                npc_weapon_cache::build();
             }},
             { _( "Achievements" ), &achievement::finalize },
             { _( "Localization" ), &l10n_data::load_mod_catalogues },

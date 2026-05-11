@@ -42,6 +42,8 @@
 #include "game.h"
 #include "game_constants.h"
 #include "game_inventory.h"
+#include "npc_craft_parser.h"
+#include "crafting_gui.h"
 #include "help.h"
 #include "input.h"
 #include "item.h"
@@ -68,8 +70,8 @@
 #include "npc.h"
 #include "npc_class.h"
 #include "npc_command_parser.h"
-#include "npctalk.h"
 #include "npc_recipe_cache.h"
+#include "npctalk.h"
 #include "npctrade.h"
 #include "options.h"
 #include "output.h"
@@ -295,68 +297,115 @@ auto execute_ai_command_allowlist(dialogue &d, const ai_bridge::command &cmd)
 } // namespace
 
 namespace {
+// Canonical Item Index: Name -> itype_id
+std::unordered_map<std::string, itype_id> s_item_name_registry;
+bool s_registry_initialized = false;
+
+void init_item_name_registry() {
+  if (s_registry_initialized)
+    return;
+  s_item_name_registry.clear();
+  for (const itype *itp : item_controller->all()) {
+    std::string name = itp->nname(1);
+    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+    s_item_name_registry[name] = itp->get_id();
+  }
+  s_registry_initialized = true;
+  ai_actions::ai_log(string_format("[REGISTRY] Indexed %zu items.",
+                                   s_item_name_registry.size()));
+}
+
+enum class intent_layer {
+  CHAT,    // LLM Persona / RP
+  COMMAND, // NPC Actions / Orders
+};
 
 /// Options to control which blocks of context are sent to the LLM.
 struct context_options {
-    bool include_status = false;    // Skills, detailed HP, etc.
-    bool include_inventory = false; // Full inventory list.
-    bool include_world = false;     // Nearby items/map data.
-    bool include_knowledge = false; // Recipe/disassembly info.
-    bool include_rules = false;     // NPC rules and orders.
+  intent_layer layer = intent_layer::CHAT;
+  bool include_status = false;     // Skills, detailed HP, etc.
+  bool include_inventory = false;  // Full inventory list.
+  bool include_world = false;      // Nearby items/map data.
+  bool include_knowledge = false;  // Recipe/disassembly info.
+  bool include_rules = false;      // NPC rules and orders.
 };
 
 /// Analyzes the user's latest input to determine what context is relevant.
 auto analyze_intent( const std::string &msg, bool is_order ) -> context_options
 {
-    auto opts = context_options{};
-    const auto low = []( std::string s ) {
-        std::transform( s.begin(), s.end(), s.begin(), ::tolower );
-        return s;
-    }( msg );
+  auto opts = context_options{};
+  const auto low = [](std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    return s;
+  }(msg);
 
-    // Orders always get world and rules context
-    if( is_order ) {
-        opts.include_world = true;
-        opts.include_rules = true;
-    }
+  // Initial layer assignment
+  if( is_order ) {
+    opts.layer = intent_layer::COMMAND;
+    opts.include_world = true;
+    opts.include_rules = true;
+  }
 
-    // Keyword detection for dynamic context injection
-    if( low.find( "inventory" ) != std::string::npos || low.find( "what do you have" ) != std::string::npos ) {
-        opts.include_inventory = true;
-    }
-    if( low.find( "status" ) != std::string::npos || low.find( "health" ) != std::string::npos ||
-        low.find( "skill" ) != std::string::npos || low.find( "how are you" ) != std::string::npos ) {
-        opts.include_status = true;
-    }
-    if( low.find( "around" ) != std::string::npos || low.find( "look" ) != std::string::npos ||
-        low.find( "get" ) != std::string::npos || low.find( "pick" ) != std::string::npos ||
-        low.find( "resupply" ) != std::string::npos ) {
-        opts.include_world = true;
-    }
-    if( low.find( "craft" ) != std::string::npos || low.find( "make" ) != std::string::npos ||
-        low.find( "fix" ) != std::string::npos || low.find( "disassemble" ) != std::string::npos ) {
-        opts.include_knowledge = true;
-        opts.include_inventory = true;
-    }
+  // Keyword detection for dynamic context injection
+  if (low.find("inventory") != std::string::npos ||
+      low.find("what do you have") != std::string::npos) {
+    opts.include_inventory = true;
+  }
+  if (low.find("status") != std::string::npos ||
+      low.find("how are you") != std::string::npos ||
+      low.find("health") != std::string::npos) {
+    opts.include_status = true;
+  }
+  if (low.find("craft") != std::string::npos ||
+      low.find("make") != std::string::npos ||
+      low.find("recipe") != std::string::npos ||
+      low.find("knowledge") != std::string::npos) {
+    opts.include_knowledge = true;
+  }
+  if (low.find("around") != std::string::npos ||
+      low.find("look") != std::string::npos ||
+      low.find("get") != std::string::npos ||
+      low.find("pick") != std::string::npos ||
+      low.find("resupply") != std::string::npos) {
+    opts.include_world = true;
+  }
+  if (low.find("craft") != std::string::npos ||
+      low.find("make") != std::string::npos ||
+      low.find("fix") != std::string::npos ||
+      low.find("disassemble") != std::string::npos) {
+    opts.include_knowledge = true;
+    opts.include_inventory = true;
+  }
 
-    return opts;
+  return opts;
 }
 
 } // namespace
 
 static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
-                          bool is_order ) -> void {
+                                 bool is_order ) -> void {
   // Determine context relevance based on last message (req.user is the prompt)
   const auto opts = analyze_intent( req.user, is_order );
 
   const auto action_example =
       std::string{R"(<action>{"action": "follow"}</action>)"};
-  std::string system =
-      string_format("## ROLE: %s. Talking to %s.\n"
-                    "## TASK: Natural RP based on the JSON data provided.\n",
-                    d.beta->get_name().c_str(), d.alpha->get_name().c_str());
 
-  if (is_order) {
+  std::string system;
+  if (opts.layer == intent_layer::COMMAND) {
+    system =
+        string_format("## MODE: COMMAND_LAYER\n"
+                      "## ROLE: %s. Talking to %s.\n"
+                      "## TASK: Execute orders via <action> tags.\n",
+                      d.beta->get_name().c_str(), d.alpha->get_name().c_str());
+  } else {
+    system =
+        string_format("## MODE: CHAT_LAYER\n"
+                      "## ROLE: %s. Talking to %s.\n"
+                      "## TASK: Natural RP based on the JSON data provided.\n",
+                      d.beta->get_name().c_str(), d.alpha->get_name().c_str());
+  }
+
+  if (opts.layer == intent_layer::COMMAND) {
     system +=
         "## COMMAND FORMAT (CRITICAL):\n"
         "- If you agree to an order, you MUST append the action tag at the "
@@ -384,13 +433,16 @@ static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
         "aim_spray, use_guns, stop_guns, use_grenades, stop_grenades.\n";
   }
 
-  system +=
-      "## RULES:\n"
-      "- CRITICAL: Use skill levels from context. NEVER invent levels.\n"
-      "- ALWAYS check [MY_DETAILED_STATUS_JSON].\n"
-      "- ABSOLUTE TRUTH: The JSON data in [CURRENT_GAME_CONTEXT] is the "
-      "ONLY factual source. Trust it 100% over memory.\n"
-      "- When an order is given, prioritize executing it over long chat.\n";
+  system += "## RULES:\n"
+            "- CRITICAL: Use skill levels from context. NEVER invent levels.\n"
+            "- ALWAYS check [MY_DETAILED_STATUS_JSON].\n"
+            "- ABSOLUTE TRUTH: The JSON data in [CURRENT_GAME_CONTEXT] is the "
+            "ONLY factual source. Trust it 100% over memory.\n";
+
+  if (opts.layer != intent_layer::COMMAND) {
+    system +=
+        "- When an order is given, prioritize executing it over long chat.\n";
+  }
 
   req.system = system;
 
@@ -453,24 +505,25 @@ static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
 
   // ── Modular JSON Generators ───────────────────────────────────────────
 
-  auto get_nearby_items_json = []( const tripoint &pos, bool enabled ) -> std::string {
-    if( !enabled ) {
-        return "[]";
+  auto get_nearby_items_json = [](const tripoint &pos,
+                                  bool enabled) -> std::string {
+    if (!enabled) {
+      return "[]";
     }
     std::string items_json = "[";
     bool first_item = true;
-    for( const auto &p : get_map().points_in_radius( pos, 10 ) ) {
-      if( get_map().sees( pos, p, 10 ) ) {
-        auto stack = get_map().i_at( p );
-        for( const auto &it : stack ) {
-          if( !first_item ) {
+    for (const auto &p : get_map().points_in_radius(pos, 10)) {
+      if (get_map().sees(pos, p, 10)) {
+        auto stack = get_map().i_at(p);
+        for (const auto &it : stack) {
+          if (!first_item) {
             items_json += ", ";
           }
           items_json += string_format(
               "{\"name\": \"%s\", \"id\": \"%s\", \"category\": \"%s\", "
               "\"dist\": %d}",
               it->tname().c_str(), it->typeId().str().c_str(),
-              it->get_category().get_id().str().c_str(), rl_dist( pos, p ) );
+              it->get_category().get_id().str().c_str(), rl_dist(pos, p));
           first_item = false;
         }
       }
@@ -479,19 +532,19 @@ static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
     return items_json;
   };
 
-  auto get_inv_json = []( const player *p, bool enabled ) -> std::string {
-    if( !enabled ) {
-        return "[]";
+  auto get_inv_json = [](const player *p, bool enabled) -> std::string {
+    if (!enabled) {
+      return "[]";
     }
     std::string i_json = "[";
-    const auto &items = const_cast<player *>( p )->inv_dump();
-    for( size_t i = 0; i < std::min<size_t>( items.size(), 100 ); ++i ) {
+    const auto &items = const_cast<player *>(p)->inv_dump();
+    for (size_t i = 0; i < std::min<size_t>(items.size(), 100); ++i) {
       i_json += string_format(
           "{\"id\": \"%s\", \"name\": \"%s\", \"category\": \"%s\"}, ",
           items[i]->typeId().str().c_str(), items[i]->tname().c_str(),
-          items[i]->get_category().get_id().str().c_str() );
+          items[i]->get_category().get_id().str().c_str());
     }
-    if( i_json.size() > 1 ) {
+    if (i_json.size() > 1) {
       i_json.pop_back();
       i_json.pop_back();
     }
@@ -528,33 +581,35 @@ static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
         bp_json("arm_l").c_str(), bp_json("arm_r").c_str(),
         bp_json("leg_l").c_str(), bp_json("leg_r").c_str());
   };
-  auto get_item_knowledge_json = []( const itype_id &id ) -> std::string {
-    return npc_recipe_cache::get_recipe_knowledge_json( id );
+  auto get_item_knowledge_json = [](const itype_id & /* id */ ) -> std::string {
+    // get_recipe_knowledge_json() removed — LLM crafting path eliminated.
+    return "null";
   };
 
   std::ostringstream oss_npc;
   oss_npc << "{\"stamina\": " << d.beta->get_stamina()
           << ", \"calories\": " << d.beta->get_stored_kcal()
-          << ", \"fatigue\": " << d.beta->get_fatigue() 
-          << ", \"pain\": \"" << d.beta->get_pain_description().first << "\""
+          << ", \"fatigue\": " << d.beta->get_fatigue() << ", \"pain\": \""
+          << d.beta->get_pain_description().first << "\""
           << ", \"weapon\": " << get_weapon_json(d.beta->used_weapon(), d.beta);
 
   if (opts.include_status) {
-      oss_npc << ", \"skills\": " << get_skills_json(d.beta)
-              << ", \"health\": " << get_hp_json(d.beta)
-              << ", \"armor\": " << get_clothing_json(d.beta);
+    oss_npc << ", \"skills\": " << get_skills_json(d.beta)
+            << ", \"health\": " << get_hp_json(d.beta)
+            << ", \"armor\": " << get_clothing_json(d.beta);
   }
 
   if (opts.include_inventory) {
-      oss_npc << ", \"inventory\": " << get_inv_json(d.beta, true);
+    oss_npc << ", \"inventory\": " << get_inv_json(d.beta, true);
   } else {
-      oss_npc << ", \"inventory\": \"[USE_ACTION_TO_CHECK]\"";
+    oss_npc << ", \"inventory\": \"[USE_ACTION_TO_CHECK]\"";
   }
 
   if (opts.include_world) {
-      oss_npc << ", \"nearby_items\": " << get_nearby_items_json(d.beta->pos(), true);
+    oss_npc << ", \"nearby_items\": "
+            << get_nearby_items_json(d.beta->pos(), true);
   } else {
-      oss_npc << ", \"nearby_items\": \"[USE_ACTION_TO_CHECK]\"";
+    oss_npc << ", \"nearby_items\": \"[USE_ACTION_TO_CHECK]\"";
   }
 
   oss_npc << ", \"last_action\": {\"command\": \""
@@ -562,21 +617,34 @@ static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
           << "\", \"status\": \"verified_success\"}";
 
   if (opts.include_knowledge) {
-      oss_npc << ", \"item_knowledge\": {";
-      std::set<itype_id> known_ids;
-      if (!d.beta->used_weapon().is_null()) {
-        known_ids.insert(d.beta->used_weapon().typeId());
+    oss_npc << ", \"item_knowledge\": {";
+    std::set<itype_id> known_ids;
+    if (!d.beta->used_weapon().is_null()) {
+      known_ids.insert(d.beta->used_weapon().typeId());
+    }
+    for (const auto &it : d.beta->inv_dump()) {
+      known_ids.insert(it->typeId());
+    }
+
+    // Simple heuristic: if player mentioned an item by name, inject its
+    // knowledge. This allows responding to "What is the recipe for X?" even if
+    // NPC doesn't have X.
+    for (const itype *itp : item_controller->all()) {
+      if (itp->nname(1).size() > 3 &&
+          req.user.find(itp->nname(1)) != std::string::npos) {
+        known_ids.insert(itp->get_id());
       }
-      for (const auto &it : d.beta->inv_dump()) {
-        known_ids.insert(it->typeId());
-      }
-      bool first_k = true;
-      for (const auto &id : known_ids) {
-        if (!first_k) oss_npc << ", ";
-        oss_npc << "\"" << id.str() << "\": " << get_item_knowledge_json(id);
-        first_k = false;
-      }
-      oss_npc << "}";
+      if (known_ids.size() > 50)
+        break; // Token safety cap
+    }
+    bool first_k = true;
+    for (const auto &id : known_ids) {
+      if (!first_k)
+        oss_npc << ", ";
+      oss_npc << "\"" << id.str() << "\": " << get_item_knowledge_json(id);
+      first_k = false;
+    }
+    oss_npc << "}";
   }
 
   oss_npc << "}";
@@ -622,6 +690,42 @@ static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
   oss_prox << "]}";
   req.ctx.proximity_npcs_summary = oss_prox.str();
   req.ctx.conversation_summary = ""; // Managed dynamically
+
+
+  // ── Debug Logging: Full LLM Payload Construction ──────────────────
+  DebugLog(DL::Info, DC::NPC)
+      << "========== [LLM_PROMPT_CONSTRUCTION] START ==========";
+  DebugLog(DL::Info, DC::NPC)
+      << "[INTENT] " << (is_order ? "COMMAND_LAYER" : "CHAT_LAYER");
+  DebugLog(DL::Info, DC::NPC)
+      << "[CHAT/COMMAND ROUTE] "
+      << (is_order ? "COMMAND_MODE" : "CASUAL_CHAT_MODE");
+  DebugLog(DL::Info, DC::NPC) << "[FLAGS] Status: " << opts.include_status
+                              << ", Inv: " << opts.include_inventory
+                              << ", World: " << opts.include_world
+                              << ", Knowledge: " << opts.include_knowledge;
+  DebugLog(DL::Info, DC::NPC) << "[RECIPE_CACHE_INCLUDED] "
+                              << (opts.include_knowledge ? "true" : "false");
+  DebugLog(DL::Info, DC::NPC)
+      << "[ACTION_INSTRUCTIONS_PRESENT] "
+      << (req.system.find("<action>") != std::string::npos || is_order
+              ? "true"
+              : "false");
+
+  DebugLog(DL::Info, DC::NPC) << "--- [SYSTEM_PROMPT] ---";
+  DebugLog(DL::Info, DC::NPC) << req.system;
+
+  DebugLog(DL::Info, DC::NPC) << "--- [USER_PROMPT] ---";
+  DebugLog(DL::Info, DC::NPC) << req.user;
+
+  DebugLog(DL::Info, DC::NPC) << "--- [CONTEXT_JSON] ---";
+  DebugLog(DL::Info, DC::NPC) << "Status: " << req.ctx.npc_status_summary;
+  DebugLog(DL::Info, DC::NPC) << "Player: " << req.ctx.player_status_summary;
+  DebugLog(DL::Info, DC::NPC) << "Nearby: " << req.ctx.proximity_npcs_summary;
+  DebugLog(DL::Info, DC::NPC) << "Env: " << req.ctx.game_state_summary;
+
+  DebugLog(DL::Info, DC::NPC)
+      << "========== [LLM_PROMPT_CONSTRUCTION] END ===========";
 }
 
 [[maybe_unused]] static auto export_cleaned_game_json() -> void {
@@ -2846,6 +2950,10 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
         bridge.pump_callbacks(std::chrono::milliseconds{50});
         if (ai_state.have_reply && !ai_state.reply_displayed) {
           ai_state.reply_displayed = true;
+
+          // ── CHAT_LAYER / COMMAND_LAYER Passthrough ─────────────────────
+          std::string clean_reply = ai_state.reply_text;
+
           if (!ai_state.pending_cmds.empty()) {
             npc *n = dynamic_cast<npc *>(beta);
             for (const auto &cmd : ai_state.pending_cmds) {
@@ -2881,13 +2989,32 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
 
       ch = inp_mngr.get_input_event().get_first_input();
       if (use_ai) {
-        if (ch == KEY_ENTER || ch == '\n' || ch == '\r' || ch == 'c') {
+        if (ch == KEY_ENTER || ch == '\n' || ch == '\r' || ch == 'c' ||
+            ch == 'C') {
           bool is_order = (ch == 'c');
+          bool is_craft = (ch == 'C');
+
+          // ── CRAFT: Fully deterministic — open engine recipe selector ────
+          if( is_craft ) {
+              int batch_size = 0;
+              const recipe *rec = select_crafting_recipe( batch_size );
+              if( rec != nullptr ) {
+                  const auto disp = npc_craft_parser::resolve_and_display( rec->result() );
+                  d_win.add_to_history( string_format(
+                      pgettext( "npc says something", "%s: %s" ),
+                      colorize( beta->name, c_light_green ),
+                      disp.found ? disp.display.c_str()
+                                 : _( "No recipe information available." ) ) );
+              }
+              return topic;
+          }
+          // ── ORDER / CHAT: text input via popup ──────────────────────────
           string_input_popup popup;
-          popup.title(is_order ? _("Order NPC") : _("Say"))
-              .description(is_order ? _("Give a direct command to the NPC.")
-                                    : _("Type what you want to say."))
-              .width(64)
+          popup
+              .title( is_order ? _( "Order NPC" ) : _( "Say" ) )
+              .description( is_order ? _( "Give a direct command to the NPC." )
+                                     : _( "Type what you want to say." ) )
+              .width( 64 )
               .query();
 
           const auto user_text = popup.text();
@@ -2896,8 +3023,11 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
                 string_format(pgettext("you say something", "%s: %s"),
                               colorize(_("You"), c_green), user_text));
 
-            // 일반 대화인 경우에만 플레이어의 대화 누적 (명령은 기억하지 않음)
-            if (!is_order) {
+            // ── Stateless Routing ───────────────────────────────────────────
+            // Only remember standard chat (Return).
+            // Command (c) and Craft (C) are stateless and not remembered in
+            // conversation history.
+            if (!is_order && !is_craft) {
               ai_state.accumulated_chat += "Player: " + user_text + "\n";
             }
             if (ai_state.accumulated_chat.size() > 2000) {
@@ -2922,11 +3052,12 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
                 }
                 // Execute any allowlist toggle that also matches (e.g. follow).
                 execute_ai_command_allowlist(
-                    *this, ai_bridge::command{cmd->action, cmd->target});
+                    *this, ai_bridge::command{.action = cmd->action,
+                                              .target = cmd->target,
+                                              .args = {}});
                 return talk_topic("TALK_DONE");
               }
-            }
-            // ── LLM path (unchanged below) ───────────────────────────────
+            } // end deterministic command bypass
 
             ai_state.have_reply = false;
             ai_state.reply_text.clear();
