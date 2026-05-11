@@ -77,6 +77,7 @@
 #include "mutation.h"
 #include "npc.h"
 #include "npc_class.h"
+#include "npc_recipe_cache.h"
 #include "npc_weapon_cache.h"
 #include "omdata.h"
 #include "overlay_ordering.h"
@@ -722,6 +723,10 @@ void DynamicDataLoader::finalize_loaded_data( loading_ui &ui )
             { _( "Harvest lists" ), &harvest_list::finalize_all },
             { _( "Anatomies" ), &anatomy::finalize_all },
             { _( "Mutations" ), &mutation_branch::finalize },
+            { _( "NPC AI Cache" ), []() {
+                npc_recipe_cache::init();
+                npc_weapon_cache::init();
+            }},
             { _( "Achievements" ), &achievement::finalize },
             { _( "Localization" ), &l10n_data::load_mod_catalogues },
 #if defined(TILES)

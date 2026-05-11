@@ -69,6 +69,7 @@
 #include "npc_class.h"
 #include "npc_command_parser.h"
 #include "npctalk.h"
+#include "npc_recipe_cache.h"
 #include "npctrade.h"
 #include "options.h"
 #include "output.h"
@@ -527,54 +528,8 @@ static auto populate_ai_context( ai_bridge::request &req, const dialogue &d,
         bp_json("arm_l").c_str(), bp_json("arm_r").c_str(),
         bp_json("leg_l").c_str(), bp_json("leg_r").c_str());
   };
-
-  auto get_item_knowledge_json = [](const itype_id &id) -> std::string {
-    const auto &uncraft = recipe_dictionary::get_uncraft(id);
-
-    std::string k_json = "{";
-    bool has_recipe = false;
-    for (const auto &pair : recipe_dict) {
-      if (pair.second.result() == id) {
-        if (!has_recipe) {
-          k_json += "\"craftable_from\": [";
-          const auto &comp_list =
-              pair.second.simple_requirements().get_components();
-          for (const auto &comps : comp_list) {
-            if (!comps.empty()) {
-              k_json += "\"" + comps[0].type.str() + "\", ";
-            }
-          }
-          if (k_json.back() == ' ') {
-            k_json.pop_back();
-            k_json.pop_back();
-          }
-          k_json += "], ";
-          has_recipe = true;
-        }
-      }
-    }
-
-    if (!uncraft.result().is_null()) {
-      k_json += "\"disassembles_into\": [";
-      for (const auto &comps : uncraft.simple_requirements().get_components()) {
-        if (!comps.empty()) {
-          k_json += "\"" + comps[0].type.str() + "\", ";
-        }
-      }
-      if (k_json.back() == ' ') {
-        k_json.pop_back();
-        k_json.pop_back();
-      }
-      k_json += "]";
-    }
-
-    if (k_json.back() == ' ' || k_json.back() == ',') {
-      k_json.pop_back();
-      if (k_json.back() == ',')
-        k_json.pop_back();
-    }
-    k_json += "}";
-    return k_json == "{}" ? "null" : k_json;
+  auto get_item_knowledge_json = []( const itype_id &id ) -> std::string {
+    return npc_recipe_cache::get_recipe_knowledge_json( id );
   };
 
   std::ostringstream oss_npc;
