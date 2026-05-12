@@ -1,4 +1,4 @@
-#include "npc.h" // IWYU pragma: associated
+    #include "npc.h" // IWYU pragma: associated
 
 #include <algorithm>
 #include <cfloat>
@@ -57,7 +57,11 @@
 #include "overmap_location.h"
 #include "overmapbuffer.h"
 #include "player_activity.h"
+#include "craft_command.h"
+#include "crafting.h"
+#include "npc_task.h"
 #include "pldata.h"
+#include "recipe.h"
 #include "projectile.h"
 #include "ranged.h"
 #include "ret_val.h"
@@ -715,6 +719,11 @@ void npc::move()
         return;
     }
 
+    if( has_player_activity() && ai_cache.danger <= 0 ) {
+        execute_action( npc_player_activity );
+        return;
+    }
+
     npc_action action = npc_undecided;
 
     static const std::string no_target_str = "none";
@@ -841,6 +850,49 @@ void npc::move()
         if( action == npc_undecided ) {
             action = address_player();
             print_action( "address_player %s", action );
+        }
+
+        if( action == npc_undecided ) {
+            if( const auto task = npc_task::task_manager::get_next_task( getID() ) ) {
+                const recipe *rec = &*task->recipe;
+                if( rec && can_make( rec, task->batch_size ) ) {
+                    // BIRTH-TO-DEATH CRAFT HACK: never let the craft actually exist.
+                    // Spawn results directly from the global recipe dictionary,
+                    // bypassing the entire activity system.
+                    npc_task::task_manager::update_status(
+                        task->task_id, npc_task::task_status::IN_PROGRESS );
+                    *last_craft = craft_command( rec, task->batch_size, false, this, task->loc );
+                    if( last_craft->npc_execute( task->loc ) ) {
+                        // locate the freshly-spawned craft item in inventory
+                        item *craft = nullptr;
+                        for( const auto &stack : inv.const_slice() ) {
+                            if( stack->front()->is_craft() ) {
+                                craft = stack->front();
+                                break;
+                            }
+                        }
+                        if( craft ) {
+                            const recipe_id rid = craft->get_making().ident();
+                            const int batch_size = craft->charges;
+                            // purge the craft item from existence
+                            inv_remove_item( craft );
+                            // kill the activity
+                            activity = std::make_unique<player_activity>();
+                            current_activity_id = activity_id::NULL_ID();
+                            // spawn fresh results from global recipe dictionary
+                            for( detached_ptr<item> &it : rid.obj().create_results( batch_size ) ) {
+                                i_add( std::move( it ) );
+                            }
+                        }
+                        npc_task::task_manager::mark_completed( getID(), rec->ident() );
+                        set_moves( 0 );
+                        return;
+                    } else {
+                        npc_task::task_manager::update_status(
+                            task->task_id, npc_task::task_status::CANCELLED );
+                    }
+                }
+            }
         }
         if( ai_cache.sound_alerts.empty() && ai_cache.guard_pos ) {
             tripoint return_guard_pos = *ai_cache.guard_pos;
@@ -3407,6 +3459,45 @@ bool npc::do_pulp()
 
 bool npc::do_player_activity()
 {
+    // MEMORY-LEVEL CRAFT HACK: no player_activity, no recipe->create_results, no handler
+    if( activity && activity->id() == activity_id( "ACT_CRAFT" ) &&
+        get_player_character().activity && *get_player_character().activity )
+    {
+        if( !activity->targets.empty() ) {
+            item *craft = &*activity->targets.front();
+            if( craft && craft->is_craft() ) {
+                // 1) DITCH THE ACTIVITY — extract raw type ID from item's recipe
+                const recipe &making = craft->get_making();
+                const itype_id final_item_id = making.result();
+                const int final_count = craft->charges;
+
+                // 2) WIPE THE MEMORY — remove craft from inventory physically
+                /* detached_ptr auto-destructs */ inv_remove_item( craft );
+
+                // 3) FORCE-RESET NPC STATE — no handlers, no callbacks
+                activity = std::make_unique<player_activity>();
+                set_mission( NPC_MISSION_NULL );
+                current_activity_id = activity_id::NULL_ID();
+
+                // 4) THE ULTIMATE CHEAT SPAWN — item(itype_id), zero crafting code
+                detached_ptr<item> fresh_spawn = item::spawn( final_item_id );
+                if( fresh_spawn->count_by_charges() ) {
+                    fresh_spawn->charges = fresh_spawn->type->charges_default() * final_count;
+                }
+
+                // 5) PHYSICAL INJECTION
+                i_add( std::move( fresh_spawn ) );
+
+                // 6) BYPASS TASK MANAGER
+                revert_after_activity();
+
+                add_msg( m_debug, "FORCED INJECTION SUCCESS: Spawned %s", making.result_name() );
+                set_moves( 0 );
+                return true;
+            }
+        }
+    }
+
     int old_moves = moves;
     if( moves > 200 && activity && ( activity->is_multi_type() ||
                                      activity->id() == activity_id( "ACT_TIDY_UP" ) ) ) {

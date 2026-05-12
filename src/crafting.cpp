@@ -50,6 +50,7 @@
 #include "messages.h"
 #include "mutation.h"
 #include "npc.h"
+#include "npc_task.h"
 #include "options.h"
 #include "output.h"
 #include "pimpl.h"
@@ -331,6 +332,15 @@ void Character::craft( const tripoint &loc )
     const recipe *rec = select_crafting_recipe( batch_size );
     if( rec ) {
         if( crafting_allowed( *this, *rec ) ) {
+            auto task = npc_task::craft_task{
+                .recipe = rec->ident(),
+                .batch_size = batch_size,
+                .actor = getID(),
+                .loc = loc,
+                .status = npc_task::task_status::PENDING
+            };
+            npc_task::task_manager::add_task( task );
+            // Immediate trigger for player
             make_craft( rec->ident(), batch_size, loc );
         }
     }
@@ -351,6 +361,15 @@ void Character::long_craft( const tripoint &loc )
     const recipe *rec = select_crafting_recipe( batch_size );
     if( rec ) {
         if( crafting_allowed( *this, *rec ) ) {
+            auto task = npc_task::craft_task{
+                .recipe = rec->ident(),
+                .batch_size = batch_size,
+                .actor = getID(),
+                .loc = loc,
+                .status = npc_task::task_status::PENDING
+            };
+            npc_task::task_manager::add_task( task );
+            // Immediate trigger for player
             make_all_craft( rec->ident(), batch_size, loc );
         }
     }
@@ -1184,6 +1203,8 @@ void complete_craft( Character &who, item &craft )
     }
 
     who.inv_restack( );
+    // Mark task as completed in the deterministic task system
+    npc_task::task_manager::mark_completed( who.getID(), making.ident() );
 }
 
 bool Character::can_continue_craft( item &craft )

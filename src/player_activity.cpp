@@ -26,6 +26,7 @@
 #include "itype.h"
 #include "map.h"
 #include "npc.h"
+#include "npc_task.h"
 #include "options.h"
 #include "player.h"
 #include "profile.h"
@@ -623,6 +624,10 @@ void player_activity::canceled( Character &who )
 {
     if( *this && actor ) {
         actor->canceled( *this, who );
+    }
+    // Mark task as cancelled in the deterministic task system
+    if( id() == ACT_CRAFT ) {
+        npc_task::task_manager::mark_cancelled( who.getID() );
     }
     for( Character *npc : assistants() ) {
         npc->cancel_activity();

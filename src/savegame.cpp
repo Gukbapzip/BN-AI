@@ -30,6 +30,7 @@
 #include "mongroup.h"
 #include "monster.h"
 #include "npc.h"
+#include "npc_task.h"
 #include "omdata.h"
 #include "options.h"
 #include "output.h"
@@ -122,6 +123,8 @@ void game::serialize( std::ostream &fout )
     json.end_object();
 
     json.member( "player", u );
+    json.member( "npc_tasks" );
+    npc_task::task_manager::serialize( json );
     Messages::serialize( json );
 
     json.end_object();
@@ -271,8 +274,11 @@ void game::unserialize( std::istream &fin )
         inp_mngr.pump_events();
         data.read( "stats_tracker", *stats_tracker_ptr );
         data.read( "achievements_tracker", *achievements_tracker_ptr );
-        data.read( "token_provider", token_provider_ptr );
+        data.read( "token_provider", *token_provider_ptr );
         inp_mngr.pump_events();
+        if( data.has_object( "npc_tasks" ) ) {
+            npc_task::task_manager::deserialize( data.get_object( "npc_tasks" ) );
+        }
         Messages::deserialize( data );
 
     } catch( const JsonError &jsonerr ) {

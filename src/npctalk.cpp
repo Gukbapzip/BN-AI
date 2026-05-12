@@ -42,6 +42,7 @@
 #include "game.h"
 #include "game_constants.h"
 #include "game_inventory.h"
+#include "npc_task.h"
 #include "npc_craft_parser.h"
 #include "crafting_gui.h"
 #include "help.h"
@@ -2994,17 +2995,19 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
           bool is_order = (ch == 'c');
           bool is_craft = (ch == 'C');
 
-          // ── CRAFT: Fully deterministic — open engine recipe selector ────
           if( is_craft ) {
               int batch_size = 0;
               const recipe *rec = select_crafting_recipe( batch_size );
               if( rec != nullptr ) {
-                  const auto disp = npc_craft_parser::resolve_and_display( rec->result() );
-                  d_win.add_to_history( string_format(
-                      pgettext( "npc says something", "%s: %s" ),
-                      colorize( beta->name, c_light_green ),
-                      disp.found ? disp.display.c_str()
-                                 : _( "No recipe information available." ) ) );
+                  auto task = npc_task::craft_task{
+                      .recipe = rec->ident(),
+                      .batch_size = batch_size,
+                      .actor = beta->getID(),
+                      .loc = beta->pos(),
+                      .status = npc_task::task_status::PENDING
+                  };
+                  npc_task::task_manager::add_task( task );
+                  add_msg( m_info, _( "You assign the task to %s." ), beta->disp_name() );
               }
               return topic;
           }

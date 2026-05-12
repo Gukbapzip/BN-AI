@@ -189,6 +189,120 @@ void craft_command::execute( const tripoint &new_loc )
     }
 }
 
+/// NPC-safe, non-interactive crafting start.
+/// Replicates execute() component selection but always picks the first
+/// available option instead of showing UI popups.
+auto craft_command::npc_execute( const tripoint &new_loc ) -> bool
+{
+    if( empty() ) {
+        return false;
+    }
+
+    if( new_loc != tripoint_zero ) {
+        loc = new_loc;
+    }
+
+    if( !crafter->can_make( rec, batch_size ) ) {
+        return false;
+    }
+
+    inventory map_inv;
+    map_inv.form_from_map( crafter->pos(), PICKUP_RANGE, crafter );
+
+    // Prefer non-rotten components; fall back to any if needed.
+    flags = recipe_filter_flags::no_rotten;
+    if( !crafter->can_start_craft( rec, flags, batch_size ) ) {
+        flags = recipe_filter_flags::none;
+        if( !crafter->can_start_craft( rec, flags, batch_size ) ) {
+            return false;
+        }
+    }
+
+    item_selections.clear();
+    tool_selections.clear();
+
+    const auto filter = rec->get_component_filter( flags );
+    const requirement_data *needs = rec->deduped_requirements().select_alternative(
+                                        *crafter, filter, batch_size, cost_adjustment::start_only );
+    if( !needs ) {
+        return false;
+    }
+
+    // Auto-select first available component for each slot — no UI.
+    for( const auto &alternatives : needs->get_components() ) {
+        auto found = false;
+        for( const item_comp &comp : alternatives ) {
+            const auto count = comp.count > 0
+                               ? comp.count * batch_size
+                               : std::abs( comp.count );
+            if( item::count_by_charges( comp.type ) ) {
+                if( crafter->has_charges( comp.type, count, filter ) ) {
+                    item_selections.emplace_back( usage_from::player, comp );
+                    found = true;
+                    break;
+                } else if( map_inv.has_charges( comp.type, count, filter ) ) {
+                    item_selections.emplace_back( usage_from::map, comp );
+                    found = true;
+                    break;
+                }
+            } else {
+                if( crafter->has_amount( comp.type, count, false, filter ) ) {
+                    item_selections.emplace_back( usage_from::player, comp );
+                    found = true;
+                    break;
+                } else if( map_inv.has_components( comp.type, count, filter ) ) {
+                    item_selections.emplace_back( usage_from::map, comp );
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if( !found ) {
+            return false;
+        }
+    }
+
+    // Auto-select first available tool for each slot — no UI.
+    for( const auto &alternatives : needs->get_tools() ) {
+        auto found = false;
+        for( const tool_comp &tool : alternatives ) {
+            if( tool.count > 0 ) {
+                const auto needed = tool.count * batch_size;
+                if( crafter->has_charges( tool.type, needed ) ) {
+                    tool_selections.emplace_back( usage_from::player, tool );
+                    found = true;
+                    break;
+                } else if( map_inv.has_charges( tool.type, needed ) ) {
+                    tool_selections.emplace_back( usage_from::map, tool );
+                    found = true;
+                    break;
+                }
+            } else {
+                if( crafter->has_amount( tool.type, 1 ) ) {
+                    tool_selections.emplace_back( usage_from::player, tool );
+                    found = true;
+                    break;
+                } else if( map_inv.has_tools( tool.type, 1 ) ) {
+                    tool_selections.emplace_back( usage_from::map, tool );
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if( !found ) {
+            return false;
+        }
+    }
+
+    auto *craft_item = crafter->start_craft( *this, loc );
+    if( !craft_item ) {
+        return false;
+    }
+    crafter->last_batch = batch_size;
+    crafter->lastrecipe = rec->ident();
+    return true;
+}
+
 /** Does a string join with ', ' of the components in the passed vector and inserts into 'str' */
 template<typename T>
 static std::string component_list_string( const std::vector<comp_selection<T>> &components )

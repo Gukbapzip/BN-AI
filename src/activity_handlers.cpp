@@ -3829,6 +3829,15 @@ void activity_handlers::craft_do_turn( player_activity *act, player *p )
     const bool is_long = act->values[craft_is_long_idx];
 
     if( crafting_speed <= 0.0f ) {
+        // Show a specific message so the player knows why crafting stopped,
+        // instead of a generic "completed the assigned task" from
+        // do_player_activity().
+        if( p->is_npc() ) {
+            p->add_msg_player_or_npc(
+                _( "You can't make progress on the %s — check tool quality, lighting, and level of the workbench." ),
+                _( "<npcname> stops crafting %s — they lack proper tools, lighting, or a workbench." ),
+                craft->tname() );
+        }
         p->cancel_activity();
         return;
     }
@@ -3844,8 +3853,15 @@ void activity_handlers::craft_do_turn( player_activity *act, player *p )
     const double cur_total_moves = std::max( 1, rec.batch_time( craft->charges, crafting_speed,
                                    assistants ) );
     // Delta progress in moves adjusted for current crafting speed
-    const double delta_progress = p->get_moves() > 0
-                                  ? p->get_moves() * base_total_moves / cur_total_moves
+    // NPCs are capped to 100 moves per tick to prevent instant completion
+    // if they have accumulated moves from being outside the bubble.
+    int available_moves = p->get_moves();
+    if( p->is_npc() ) {
+        available_moves = std::min( available_moves, 100 );
+    }
+
+    const double delta_progress = available_moves > 0
+                                  ? available_moves * base_total_moves / cur_total_moves
                                   : 0;
     // Current progress in moves
     const double current_progress = old_counter * base_total_moves / 10'000'000.0 + delta_progress;
@@ -3866,7 +3882,12 @@ void activity_handlers::craft_do_turn( player_activity *act, player *p )
     if( craft->get_counter() >= 10'000'000 ) {
         //TODO!: CHEEKY check
         item *craft_copy = craft;
-        p->cancel_activity();
+        // BUG FIX: Use set_to_null() instead of cancel_activity() to prevent
+        // player_activity::canceled() from calling mark_cancelled() BEFORE
+        // complete_craft() calls mark_completed().  cancel_activity() changes
+        // IN_PROGRESS→CANCELLED, then mark_completed() looks for IN_PROGRESS
+        // tasks — and finds none, leaving the task stuck as CANCELLED.
+        act->set_to_null();
         complete_craft( *p, *craft_copy );
         act->targets.front()->detach();
         if( is_long ) {
