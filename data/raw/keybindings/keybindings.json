@@ -1839,6 +1839,13 @@
   },
   {
     "type": "keybinding",
+    "name": "Squad Management",
+    "category": "DEFAULTMODE",
+    "id": "SQUADMANAGEMENT",
+    "bindings": [ { "input_method": "keyboard", "key": "F1" } ]
+  },
+  {
+    "type": "keybinding",
     "name": "Open Inventory",
     "category": "DEFAULTMODE",
     "id": "inventory",

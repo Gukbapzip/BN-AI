@@ -148,6 +148,7 @@ enum npc_action : int {
     npc_goto_to_this_pos,
     npc_goto_destination,
     npc_avoid_friendly_fire,
+    npc_step_out_to_shoot,
     npc_escape_explosion,
     npc_noop,
     npc_reach_attack,
@@ -191,6 +192,29 @@ bool compare_sound_alert( const dangerous_sound &sound_a, const dangerous_sound 
     return sound_a.volume < sound_b.volume;
 }
 
+static auto find_blocking_ally_on_los( const tripoint &from, const tripoint &to )
+    -> std::optional<tripoint>
+{
+    const map &here = get_map();
+    const std::vector<tripoint> path = line_to( from, to );
+    for( const tripoint &p : path ) {
+        if( p == from || p == to ) {
+            continue;
+        }
+        const Creature *critter = g->critter_at( p );
+        if( critter != nullptr && critter->is_npc() ) {
+            const npc *blocker = dynamic_cast<const npc *>( critter );
+            if( blocker && blocker->is_player_ally() ) {
+                return p;
+            }
+        }
+        if( here.impassable( p ) ) {
+            break;
+        }
+    }
+    return std::nullopt;
+}
+
 static bool clear_shot_reach( const tripoint &from, const tripoint &to, bool check_ally = true )
 {
     std::vector<tripoint> path = line_to( from, to );
@@ -201,10 +225,16 @@ static bool clear_shot_reach( const tripoint &from, const tripoint &to, bool che
     }
     tripoint &last_point = path[0];
     for( const tripoint &p : path ) {
-        Creature *inter = g->critter_at( p );
-        if( check_ally && inter != nullptr ) {
-            return false;
-        } else if( get_map().impassable( p ) ) {
+        if( check_ally ) {
+            const Creature *inter = g->critter_at( p );
+            if( inter != nullptr && inter->is_npc() ) {
+                const npc *blocker = dynamic_cast<const npc *>( inter );
+                if( blocker && blocker->is_player_ally() ) {
+                    return false;
+                }
+            }
+        }
+        if( get_map().impassable( p ) ) {
             return false;
         } else if( get_map().obstructed_by_vehicle_rotation( last_point, p ) ) {
             return false;
@@ -1376,6 +1406,10 @@ void npc::execute_action( npc_action action )
             avoid_friendly_fire();
             break;
 
+        case npc_step_out_to_shoot:
+            step_out_to_shoot();
+            break;
+
         case npc_escape_explosion:
             escape_explosion();
             break;
@@ -1500,8 +1534,8 @@ npc_action npc::method_of_attack()
 
         } else {
             if( !dont_move_ff ) {
-                add_msg( m_debug, "%s is trying to avoid friendly fire", disp_name() );
-                return npc_avoid_friendly_fire;
+                add_msg( m_debug, "%s is stepping out to shoot", disp_name() );
+                return npc_step_out_to_shoot;
             }
         }
     }
@@ -2683,6 +2717,226 @@ void npc::move_to_next()
     move_to( path[0] );
     if( !path.empty() && pos() == path[0] ) { // Move was successful
         path.erase( path.begin() );
+    }
+}
+
+/// Returns true if the NPC's primary weapon is considered a melee weapon.
+static auto is_melee_npc( const npc &who ) -> bool
+{
+    const item &weapon = who.primary_weapon();
+    if( weapon.is_null() ) {
+        return true; // unarmed = melee
+    }
+    if( weapon.is_gun() && weapon.ammo_sufficient() ) {
+        return false; // has ammo, prefers ranged
+    }
+    return !weapon.is_gun();
+}
+
+/// Weapon-type-aware step-out and tactical positioning.
+void npc::step_out_to_shoot()
+{
+    const Creature *critter = current_target();
+    if( critter == nullptr ) {
+        move_pause();
+        return;
+    }
+    const tripoint &tar = critter->pos();
+    const bool melee_user = is_melee_npc( *this );
+    const int step_out_range = melee_user ? 1 : 2;
+
+    const std::optional<tripoint> step_out = find_step_out_tile( pos(), tar, melee_user, step_out_range );
+    if( step_out ) {
+        const tripoint dest = *step_out;
+        if( rl_dist( pos(), dest ) <= 1 ) {
+            move_to( dest );
+        } else {
+            update_path( dest );
+            if( !path.empty() ) {
+                move_to_next();
+            } else {
+                move_pause();
+            }
+        }
+        return;
+    }
+
+    spread_out_from_allies( tar );
+}
+
+/// Lightweight search for a tile with clear LoF, avoiding ally blockers.
+auto npc::find_step_out_tile( const tripoint &from, const tripoint &target,
+                              bool melee_user, int max_steps )
+    -> std::optional<tripoint>
+{
+    map &here = get_map();
+
+    // Only search if there's actually an ally blocking
+    const std::optional<tripoint> blocker_pos = find_blocking_ally_on_los( from, target );
+    if( !blocker_pos ) {
+        return std::nullopt;
+    }
+
+    // Direction vector from self to target (2D)
+    const tripoint d = target - from;
+
+    // Perpendicular offsets relative to line-of-sight
+    const point perp_left{ -d.y, d.x };
+    const point perp_right{ d.y, -d.x };
+
+    if( perp_left == point{ 0, 0 } && perp_right == point{ 0, 0 } ) {
+        return std::nullopt;
+    }
+
+    const auto normalize_perp = []( const point &v ) -> point {
+        point n;
+        n.x = ( v.x == 0 ) ? 0 : ( v.x > 0 ? 1 : -1 );
+        n.y = ( v.y == 0 ) ? 0 : ( v.y > 0 ? 1 : -1 );
+        return n;
+    };
+
+    std::vector<point> search_dirs;
+    const point perp_l = normalize_perp( perp_left );
+    const point perp_r = normalize_perp( perp_right );
+    const point forward{ ( d.x == 0 ) ? 0 : ( d.x > 0 ? 1 : -1 ),
+                         ( d.y == 0 ) ? 0 : ( d.y > 0 ? 1 : -1 ) };
+
+    for( int step = 1; step <= max_steps; ++step ) {
+        search_dirs.push_back( perp_l * step );
+        search_dirs.push_back( perp_r * step );
+    }
+
+    // Melee users also get forward-diagonal options to close distance
+    if( melee_user ) {
+        const point fwd_l{ forward.x + perp_l.x, forward.y + perp_l.y };
+        const point fwd_r{ forward.x + perp_r.x, forward.y + perp_r.y };
+        search_dirs.push_back( fwd_l );
+        search_dirs.push_back( fwd_r );
+    }
+
+    // Deterministic shuffle so multiple NPCs don't all pick the same side
+    const size_t shuffle_seed = static_cast<size_t>( from.x + from.y );
+    const size_t split = shuffle_seed % search_dirs.size();
+    std::vector<point> shuffled;
+    shuffled.reserve( search_dirs.size() );
+    for( size_t i = split; i < search_dirs.size(); ++i ) {
+        shuffled.push_back( search_dirs[i] );
+    }
+    for( size_t i = 0; i < split; ++i ) {
+        shuffled.push_back( search_dirs[i] );
+    }
+
+    for( const point &offset : shuffled ) {
+        const tripoint candidate = from + tripoint{ offset.x, offset.y, 0 };
+        if( candidate == from ) {
+            continue;
+        }
+        if( here.passable( candidate ) && g->is_empty( candidate ) &&
+            rl_dist( from, candidate ) <= max_steps &&
+            here.has_floor( candidate ) && !g->is_dangerous_tile( candidate ) ) {
+            if( clear_shot_reach( candidate, target, true ) ) {
+                return candidate;
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
+/// Spread out from allied NPCs to avoid clumping in chokepoints.
+void npc::spread_out_from_allies( const tripoint &tar )
+{
+    map &here = get_map();
+    constexpr int SPREAD_RADIUS = 3;
+
+    std::vector<Creature *> nearby_allies;
+    for( const auto &fr : ai_cache.friends ) {
+        if( const shared_ptr_fast<Creature> fr_p = fr.lock() ) {
+            if( rl_dist( pos(), fr_p->pos() ) <= SPREAD_RADIUS ) {
+                nearby_allies.push_back( fr_p.get() );
+            }
+        }
+    }
+
+    if( nearby_allies.empty() ) {
+        avoid_friendly_fire();
+        return;
+    }
+
+    // Repulsion vector: push away from nearby allies
+    tripoint repulsion{ 0, 0, 0 };
+    for( const Creature *ally : nearby_allies ) {
+        const tripoint diff = pos() - ally->pos();
+        const int dist = rl_dist( pos(), ally->pos() );
+        if( dist > 0 ) {
+            const int weight = SPREAD_RADIUS - dist + 1;
+            repulsion.x += diff.x * weight;
+            repulsion.y += diff.y * weight;
+        }
+    }
+
+    // Attraction vector: advance toward target
+    const tripoint attraction = tar - pos();
+
+    constexpr float REPULSION_WEIGHT = 1.5f;
+    constexpr float ATTRACTION_WEIGHT = 1.0f;
+    const tripoint combined{
+        static_cast<int>( repulsion.x * REPULSION_WEIGHT + attraction.x * ATTRACTION_WEIGHT ),
+        static_cast<int>( repulsion.y * REPULSION_WEIGHT + attraction.y * ATTRACTION_WEIGHT ),
+        0
+    };
+
+    const auto normalize_step = []( const tripoint &v ) -> tripoint {
+        tripoint n;
+        n.x = ( v.x == 0 ) ? 0 : ( v.x > 0 ? 1 : -1 );
+        n.y = ( v.y == 0 ) ? 0 : ( v.y > 0 ? 1 : -1 );
+        n.z = 0;
+        return n;
+    };
+
+    // Score adjacent tiles
+    std::vector<std::pair<tripoint, float>> scored_tiles;
+    for( const tripoint &p : here.points_in_radius( pos(), 1 ) ) {
+        if( p == pos() || !here.passable( p ) || !g->is_empty( p ) ||
+            g->is_dangerous_tile( p ) ) {
+            continue;
+        }
+
+        float score = 0.0f;
+        const int dist_from_target = rl_dist( p, tar );
+        score += 10.0f / std::max( 1, dist_from_target );
+
+        for( const Creature *ally : nearby_allies ) {
+            const int ally_dist = rl_dist( p, ally->pos() );
+            if( ally_dist <= SPREAD_RADIUS ) {
+                score += static_cast<float>( ally_dist ) * 2.0f;
+            } else {
+                score += SPREAD_RADIUS * 2.0f;
+            }
+        }
+
+        const tripoint norm = normalize_step( combined );
+        if( norm != tripoint{ 0, 0, 0 } ) {
+            const tripoint desired_pos = pos() + norm;
+            if( p == desired_pos ) {
+                score += 5.0f;
+            } else if( rl_dist( p, desired_pos ) == 1 ) {
+                score += 2.0f;
+            }
+        }
+
+        scored_tiles.emplace_back( p, score );
+    }
+
+    std::sort( scored_tiles.begin(), scored_tiles.end(),
+        []( const auto &a, const auto &b ) {
+            return a.second > b.second;
+        } );
+
+    if( !scored_tiles.empty() ) {
+        move_to( scored_tiles.front().first );
+    } else {
+        avoid_friendly_fire();
     }
 }
 
@@ -4498,6 +4752,8 @@ std::string npc_action_name( npc_action action )
             return "Go to destination";
         case npc_avoid_friendly_fire:
             return "Avoid friendly fire";
+        case npc_step_out_to_shoot:
+            return "Step out to shoot";
         case npc_escape_explosion:
             return "Escape explosion";
         case npc_player_activity:

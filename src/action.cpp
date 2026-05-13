@@ -367,6 +367,8 @@ std::string action_ident( action_id act )
             return "null";
         case ACTION_SWAP_TO_NPC:
             return "SWAPTONPC";
+        case ACTION_SQUAD_MANAGEMENT:
+            return "SQUADMANAGEMENT";
         default:
             return "unknown";
     }

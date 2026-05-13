@@ -179,7 +179,7 @@ static void print_keybindings( const catacurses::window &w )
     const std::string col1 = _( "[S] Stats" );
     const std::string col2 = _( "[Y] Yell" );
     const std::string col3 = _( "[O] Opinion" );
-    const std::string col4 = _( "[Return] Chat" );
+    const std::string col4 = _( "[G] Chat" );
     const std::string col5 = _( "[c] Command" );
     const std::string col6 = _( "[C] Craft" );
 

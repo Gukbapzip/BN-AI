@@ -79,6 +79,8 @@
 #include "safemode_ui.h"
 #include "salvage.h"
 #include "scores_ui.h"
+#include "npc.h"
+#include "squad.h"
 #include "sounds.h"
 #include "string_formatter.h"
 #include "string_id.h"
@@ -1513,6 +1515,147 @@ static void cast_spell()
                        false );
 }
 
+void game::open_squad_management()
+{
+    auto &mgr = SquadManager::get();
+    uilist smenu;
+
+    smenu.text = _( "===== Squad Management =====" );
+
+    // Build menu entries for each squad
+    struct squad_entry {
+        squad_id id;
+        std::string label;
+    };
+    std::vector<squad_entry> squad_entries;
+
+    for( auto &[sid, squad] : mgr.get_all_squads() ) {
+        if( sid == squad_id::SQ_NONE ) {
+            continue;
+        }
+        const auto id_str = squad_id_to_name( sid );
+        const auto tactics_str = tactical_mode_to_name( squad.get_tactical_mode() );
+        const auto form_str = squad_formation_to_name( squad.get_formation() );
+
+        std::string leader_name;
+        const npc *const leader_ptr = squad.get_leader_ptr();
+        if( leader_ptr != nullptr ) {
+            leader_name = leader_ptr->get_name();
+        } else {
+            leader_name = _( "(no leader)" );
+        }
+
+        const std::vector<npc *> loaded = squad.get_loaded_members();
+        const int alive = static_cast<int>( loaded.size() );
+
+        std::string label = string_format( _( "[%s] %s — %d alive — [%s/%s]" ),
+                                            id_str, leader_name, alive, tactics_str, form_str );
+        squad_entries.push_back( { sid, label } );
+        smenu.addentry( static_cast<int>( sid ), true, -1, label );
+    }
+
+    if( squad_entries.empty() ) {
+        smenu.addentry( -1, false, -1, _( "(No squads active)" ) );
+    }
+
+    smenu.query();
+
+    if( smenu.ret < 0 ) {
+        return;
+    }
+
+    // Selected a squad — show per-squad actions
+    const squad_id sel_id = static_cast<squad_id>( smenu.ret );
+    Squad &sel = mgr.get_squad( sel_id );
+
+    uilist amenu;
+    amenu.text = string_format( _( "Squad %s — Actions" ), squad_id_to_name( sel_id ) );
+
+    // List members
+    const std::vector<character_id> &members = sel.get_member_ids();
+    amenu.addentry( 0, !members.empty(), 'm',
+                    string_format( _( "Members (%zu)" ), members.size() ) );
+
+    amenu.addentry( 1, !members.empty(), 't',
+                    string_format( _( "Tactics: %s" ), tactical_mode_to_name( sel.get_tactical_mode() ) ) );
+    amenu.addentry( 2, !members.empty(), 'f',
+                    string_format( _( "Formation: %s" ), squad_formation_to_name( sel.get_formation() ) ) );
+
+    // Find unassigned NPCs
+    std::vector<npc *> unassigned;
+    for( npc &guy : g->all_npcs() ) {
+        if( guy.is_player_ally() && !guy.is_dead_state() ) {
+            const squad_id current = mgr.get_npc_squad_id( guy.getID() );
+            if( current == squad_id::SQ_NONE ) {
+                unassigned.push_back( &guy );
+            }
+        }
+    }
+
+    amenu.addentry( 3, !unassigned.empty(), 'a',
+                    string_format( _( "Assign NPC (%zu available)" ), unassigned.size() ) );
+
+    amenu.query();
+
+    if( amenu.ret == 1 ) {
+        // Toggle tactics
+        tactical_mode next = static_cast<tactical_mode>(
+                                 ( static_cast<int>( sel.get_tactical_mode() ) + 1 ) %
+                                 static_cast<int>( tactical_mode::END )
+                             );
+        mgr.sync_squad_tactics( sel_id, next );
+        add_msg( m_info, _( "Squad %s tactics set to %s." ),
+                 squad_id_to_name( sel_id ), tactical_mode_to_name( next ) );
+    } else if( amenu.ret == 2 ) {
+        // Toggle formation
+        squad_formation next = static_cast<squad_formation>(
+                                   ( static_cast<int>( sel.get_formation() ) + 1 ) %
+                                   static_cast<int>( squad_formation::END )
+                               );
+        mgr.sync_squad_formation( sel_id, next );
+        add_msg( m_info, _( "Squad %s formation set to %s." ),
+                 squad_id_to_name( sel_id ), squad_formation_to_name( next ) );
+    } else if( amenu.ret == 3 && !unassigned.empty() ) {
+        // Show NPC assignment menu
+        uilist npc_menu;
+        npc_menu.text = _( "Assign NPC to squad:" );
+        for( size_t i = 0; i < unassigned.size(); ++i ) {
+            npc_menu.addentry( static_cast<int>( i ), true, -1, unassigned[i]->get_name() );
+        }
+        npc_menu.query();
+        if( npc_menu.ret >= 0 && static_cast<size_t>( npc_menu.ret ) < unassigned.size() ) {
+            mgr.assign_npc_to_squad( *unassigned[npc_menu.ret], sel_id );
+            add_msg( m_info, _( "%s assigned to squad %s." ),
+                     unassigned[npc_menu.ret]->get_name(), squad_id_to_name( sel_id ) );
+        }
+    } else if( amenu.ret == 0 && !members.empty() ) {
+        // Show member list
+        uilist mm;
+        mm.text = _( "Squad Members:" );
+        for( character_id cid : members ) {
+            npc *guy = g->find_npc( cid );
+            if( guy ) {
+                std::string entry = guy->get_name();
+                if( sel.get_leader_id() == cid ) {
+                    entry += _( " [LEADER]" );
+                }
+                mm.addentry( -1, false, -1, entry );
+            }
+        }
+        mm.addentry( static_cast<int>( mm.entries.size() ), true, 'p', _( "Promote leader…" ) );
+        mm.query();
+
+        if( mm.ret >= 0 && static_cast<size_t>( mm.ret ) < members.size() ) {
+            npc *candidate = g->find_npc( members[mm.ret] );
+            if( candidate ) {
+                mgr.promote_to_leader( *candidate );
+                add_msg( m_info, _( "%s is now squad %s leader." ),
+                         candidate->get_name(), squad_id_to_name( sel_id ) );
+            }
+        }
+    }
+}
+
 void game::open_consume_item_menu()
 {
     uilist as_m;
@@ -2077,6 +2220,10 @@ bool game::handle_action()
 
             case ACTION_LIST_ITEMS:
                 list_items_monsters();
+                break;
+
+            case ACTION_SQUAD_MANAGEMENT:
+                open_squad_management();
                 break;
 
             case ACTION_ZONES:

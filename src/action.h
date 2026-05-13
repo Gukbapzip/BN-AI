@@ -342,6 +342,8 @@ enum action_id : int {
     ACTION_TOGGLE_HOUR_TIMER,
     /** Swap to an NPC in faction menu **/
     ACTION_SWAP_TO_NPC,
+    /** Open the squad strategic command menu **/
+    ACTION_SQUAD_MANAGEMENT,
     /** Not an action, serves as count of enumerated actions */
     NUM_ACTIONS
     /**@}*/

@@ -2875,8 +2875,11 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
   if (!use_ai) {
     gen_responses(topic);
   } else {
-    responses.clear();
-    add_response_done(_("Leave."));
+    // Preserve normal response options (e.g. combat commands) alongside AI chat.
+    gen_responses(topic);
+    // Add a "type to chat" indicator so the player knows they can press G to type.
+    // The actual dialog response for sending a chat message is handled in the
+    // input loop below via the G key.
   }
   // Put quotes around challenge (unless it's an action)
   if (challenge[0] != '*' && challenge[0] != '&') {
@@ -2981,16 +2984,17 @@ talk_topic dialogue::opt(dialogue_window &d_win, const std::string &npc_name,
           }
           return topic; // Re-call opt() to render actual response
         }
-        ch = -1;
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-        continue;
+        // Non-AI keys (Enter, letters, L/S/Y/O, etc.) fall through to normal
+        // response selection below. Only 'G', 'c', 'C' are captured for AI chat.
       }
 
       bridge.pump_callbacks(std::chrono::milliseconds{2});
 
       ch = inp_mngr.get_input_event().get_first_input();
       if (use_ai) {
-        if (ch == KEY_ENTER || ch == '\n' || ch == '\r' || ch == 'c' ||
+        // Shift+G = chat with AI, so Enter/Return can select normal responses
+        // Lowercase g passes through to the game engine (e.g. 'get items').
+        if (ch == 'G' || ch == 'c' ||
             ch == 'C') {
           bool is_order = (ch == 'c');
           bool is_craft = (ch == 'C');

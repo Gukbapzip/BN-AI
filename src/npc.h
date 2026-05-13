@@ -31,6 +31,7 @@
 #include "line.h"
 #include "lru_cache.h"
 #include "pimpl.h"
+#include "squad.h"
 #include "player.h"
 #include "point.h"
 #include "sounds.h"
@@ -1093,6 +1094,11 @@ class npc : public player
         void move_to_next();
         // Maneuver so we won't shoot u
         void avoid_friendly_fire();
+        void step_out_to_shoot();
+        static auto find_step_out_tile( const tripoint &from, const tripoint &target,
+                                        bool melee_user = false, int max_steps = 2 )
+            -> std::optional<tripoint>;
+        void spread_out_from_allies( const tripoint &tar );
         void escape_explosion();
         // nomove is used to resolve recursive invocation
         void move_away_from( const tripoint &p, bool no_bash_atk = false,
@@ -1104,7 +1110,7 @@ class npc : public player
         void set_movement_mode( character_movemode mode ) override;
 
         const pathfinding_settings &get_legacy_pathfinding_settings() const override;
-        const pathfinding_settings &get_legacy_pathfinding_settings( bool no_bashing ) const;
+            const pathfinding_settings &get_legacy_pathfinding_settings( bool no_bashing ) const;
         std::set<tripoint> get_legacy_path_avoid() const override;
 
         std::pair<PathfindingSettings, RouteSettings> get_pathfinding_pair() const override;
@@ -1293,6 +1299,12 @@ class npc : public player
         npc_chatbin chatbin;
         int patience = 0; // Used when we expect the player to leave the area
         npc_follower_rules rules;
+
+        // ── Squad system ──────────────────────────────────────────────
+        squad_id current_squad = squad_id::SQ_NONE; ///< Which squad this NPC belongs to.
+        bool is_squad_leader = false;                ///< Is this NPC the squad leader.
+        tactical_mode current_tactical_mode = tactical_mode::FOLLOW;
+
         bool marked_for_death = false; // If true, we die as soon as we respawn!
         bool hit_by_player = false;
         bool hallucination = false; // If true, NPC is an hallucination
